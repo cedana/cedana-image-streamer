@@ -1,4 +1,9 @@
 use anyhow::Result;
+use aws_sdk_s3::{
+    Client,
+    primitives::ByteStream,
+    types::{CompletedMultipartUpload, CompletedPart},
+};
 use image_streamer::{
     capture::capture,
     endpoint_connection::EndpointListener,
@@ -20,6 +25,7 @@ use std::{
 };
 use std::sync::mpsc;
 use structopt::{clap::AppSettings, StructOpt};
+use tokio::runtime::Runtime;
 
 #[derive(StructOpt, PartialEq, Debug)]
 #[structopt(about,
@@ -51,10 +57,10 @@ enum Operation {
     Serve,
 }
 
-fn spawn_capture_handles(
-    dir_path: PathBuf,
+fn spawn_capture_handles_local(
     num_pipes: usize,
-    r_fds: Vec<RawFd>
+    r_fds: Vec<RawFd>,
+    dir_path: PathBuf,
 ) -> Vec<thread::JoinHandle<()>> {
     (0..num_pipes)
         .map(|i| {
@@ -105,6 +111,155 @@ fn spawn_capture_handles(
             })
         })
         .collect()
+}
+
+fn create_s3_client() -> Client {
+    let config = Runtime::new()
+        .unwrap()
+        .block_on(aws_config::load_from_env());
+    Client::new(&config)
+}
+
+async fn initiate_multipart_upload(client: &Client, bucket: &str, key: &str) -> String {
+    client
+        .create_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .expect("Failed to initiate multipart upload")
+        .upload_id
+        .expect("Upload ID not provided")
+}
+
+async fn upload_part(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    part_number: i32,
+    data: Vec<u8>,
+) -> CompletedPart {
+    let part = client
+        .upload_part()
+        .bucket(bucket)
+        .key(key)
+        .upload_id(upload_id)
+        .part_number(part_number)
+        .body(ByteStream::from(data))
+        .send()
+        .await
+        .expect("Failed to upload part");
+
+    CompletedPart::builder()
+        .part_number(part_number)
+        .e_tag(part.e_tag().unwrap().to_string())
+        .build()
+}
+
+async fn complete_multipart_upload(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    completed_parts: Vec<CompletedPart>,
+) {
+    let completed_mpu = CompletedMultipartUpload::builder()
+        .set_parts(Some(completed_parts))
+        .build();
+
+    client
+        .complete_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .upload_id(upload_id)
+        .multipart_upload(completed_mpu)
+        .send()
+        .await
+        .expect("Failed to complete multipart upload");
+}
+
+fn spawn_capture_handles_remote(
+    num_pipes: usize,
+    r_fds: Vec<RawFd>,
+    bucket: String,
+) -> Vec<thread::JoinHandle<()>> {
+    prnt!("entered spawn_capture_handles_remote");
+    (0..num_pipes)
+        .map(|i| {
+            let bucket_name = bucket.clone();
+            let r_fd = r_fds[i].clone();
+            let client = create_s3_client();
+            thread::spawn(move || {
+                let key = format!("img-{}.lz4", i);
+                prnt!(&format!("key = {}",key));
+                let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+                let upload_id = runtime.block_on(async {
+                    initiate_multipart_upload(&client, &bucket_name, &key).await
+                });
+                let mut completed_parts = Vec::new();
+                let mut total_bytes_read: u64 = 0;
+                let mut part_number = 1;
+                let mut encoder = FrameEncoder::new(Vec::new());
+                let mut input_file = unsafe { File::from_raw_fd(r_fd) };
+                let mut buffer = [0; 1048576];
+                loop {
+                    match input_file.read(&mut buffer) {
+                        Ok(0) => {
+                            if let Ok(compressed_data) = encoder.finish() {
+                                let completed_part = runtime.block_on(async {
+                                    upload_part(&client, &bucket_name, &key, &upload_id, part_number, compressed_data).await
+                                });
+                                completed_parts.push(completed_part);
+                            }
+                            runtime.block_on(async {
+                                complete_multipart_upload(&client, &bucket_name, &key, &upload_id, completed_parts.clone()).await;
+                            });
+                            eprintln!("{}", total_bytes_read);
+                            let _ = close(r_fd);
+                            return;
+                        }
+                        Ok(bytes_read) => {
+                            total_bytes_read += bytes_read as u64;
+
+                            encoder.write_all(&buffer[..bytes_read]).expect("Unable to write bytes");
+                            if encoder.get_ref().len() > 5 * 1024 * 1024 { // 5MB minimum for S3?
+                                let compressed_data = encoder.get_mut().drain(..).collect();
+                                let completed_part = runtime.block_on(async {
+                                    upload_part(&client, &bucket_name, &key, &upload_id, part_number, compressed_data).await
+                                });
+                                completed_parts.push(completed_part);
+                                part_number += 1;
+                            }
+                        }
+                        Err(e) => {
+                            if e.kind() != std::io::ErrorKind::Interrupted {
+                                eprintln!("Error reading from fd {}: {}", r_fd, e);
+                                return;
+                            }
+                        }
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+fn spawn_capture_handles(
+    dir_path: PathBuf,
+    num_pipes: usize,
+    r_fds: Vec<RawFd>,
+    bucket_name: Option<String>,
+) -> Vec<thread::JoinHandle<()>> {
+    prnt!("entered spawn_capture_handles");
+    if bucket_name.is_some() {
+        let Some(bucket) = bucket_name else { return Vec::new(); };
+        prnt!(&format!("bucket = {}", bucket));
+        spawn_capture_handles_remote(num_pipes, r_fds, bucket)
+    } else {
+        prnt!("bucket name is none");
+        spawn_capture_handles_local(num_pipes, r_fds, dir_path)
+    }
 }
 
 fn spawn_serve_handles(
@@ -163,11 +318,16 @@ fn spawn_serve_handles(
 
 fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     for handle in handles {
-        let _ = handle.join().unwrap();
+        match handle.join() {
+            Ok(_) => prnt!("Shard thread completed successfully"),
+            Err(e) => prnt!(&format!("Shard thread panicked: {:?}", e)),
+        }
     }
 }
 
-fn do_capture(dir_path: &Path, num_pipes: usize) -> Result<()> {
+fn do_capture(dir_path: &Path, num_pipes: usize, remote: bool) -> Result<()> {
+    let bucket_name = if remote { Some("direct-remoting".to_string()) } else { None };
+
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut r_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -191,8 +351,12 @@ fn do_capture(dir_path: &Path, num_pipes: usize) -> Result<()> {
     });
     thread::sleep(Duration::from_millis(10));
 
-    let handles = spawn_capture_handles(dir_path.to_path_buf(), num_pipes, r_fds);
-    let _ = handle.join().unwrap();
+    let handles = spawn_capture_handles(dir_path.to_path_buf(), num_pipes, r_fds,
+                    bucket_name);
+    match handle.join() {
+        Ok(_) => prnt!("Capture thread completed successfully"),
+        Err(e) => prnt!(&format!("Capture thread panicked: {:?}", e)),
+    }
     join_handles(handles);
 
     Ok(())
@@ -237,7 +401,7 @@ fn do_main() -> Result<()> {
     let num_pipes = opts.num_pipes;
 
     match opts.operation {
-        Operation::Capture => do_capture(dir_path, num_pipes),
+        Operation::Capture => do_capture(dir_path, num_pipes, true),
         Operation::Serve => do_serve(dir_path, num_pipes),
     }?;
     Ok(())
