@@ -23,7 +23,10 @@ use std::{
     thread,
     time::Duration,
 };
-use std::sync::mpsc;
+use std::{
+    io::Cursor,
+    sync::mpsc
+};
 use structopt::{clap::AppSettings, StructOpt};
 use tokio::runtime::Runtime;
 
@@ -38,6 +41,9 @@ use tokio::runtime::Runtime;
     global_setting(AppSettings::VersionlessSubcommands),
 )]
 struct Opts {
+    /// Bucket name in AWS S3 where lz4 images will be uploaded to / downloaded from.
+    #[structopt(short = "B", long)]
+    bucket: Option<String>,
     /// Images directory where the CRIU UNIX socket is created during streaming operations.
     // The short option -D mimics CRIU's short option for its --dir argument.
     #[structopt(short = "D", long)]
@@ -58,9 +64,9 @@ enum Operation {
 }
 
 fn spawn_capture_handles_local(
+    dir_path: PathBuf,
     num_pipes: usize,
     r_fds: Vec<RawFd>,
-    dir_path: PathBuf,
 ) -> Vec<thread::JoinHandle<()>> {
     (0..num_pipes)
         .map(|i| {
@@ -180,9 +186,9 @@ async fn complete_multipart_upload(
 }
 
 fn spawn_capture_handles_remote(
+    bucket: String,
     num_pipes: usize,
     r_fds: Vec<RawFd>,
-    bucket: String,
 ) -> Vec<thread::JoinHandle<()>> {
     prnt!("entered spawn_capture_handles_remote");
     (0..num_pipes)
@@ -206,6 +212,7 @@ fn spawn_capture_handles_remote(
                 loop {
                     match input_file.read(&mut buffer) {
                         Ok(0) => {
+                            let _ = close(r_fd);
                             if let Ok(compressed_data) = encoder.finish() {
                                 let completed_part = runtime.block_on(async {
                                     upload_part(&client, &bucket_name, &key, &upload_id, part_number, compressed_data).await
@@ -215,13 +222,13 @@ fn spawn_capture_handles_remote(
                             runtime.block_on(async {
                                 complete_multipart_upload(&client, &bucket_name, &key, &upload_id, completed_parts.clone()).await;
                             });
-                            eprintln!("{}", total_bytes_read);
+                            eprintln!("total_bytes_read = {}", total_bytes_read);
                             let _ = close(r_fd);
                             return;
                         }
                         Ok(bytes_read) => {
                             total_bytes_read += bytes_read as u64;
-
+                            println!("thread {} read {} bytes and total = {}", i.clone(), bytes_read, total_bytes_read);
                             encoder.write_all(&buffer[..bytes_read]).expect("Unable to write bytes");
                             if encoder.get_ref().len() > 5 * 1024 * 1024 { // 5MB minimum for S3?
                                 let compressed_data = encoder.get_mut().drain(..).collect();
@@ -245,28 +252,12 @@ fn spawn_capture_handles_remote(
         .collect()
 }
 
-fn spawn_capture_handles(
-    dir_path: PathBuf,
-    num_pipes: usize,
-    r_fds: Vec<RawFd>,
-    bucket_name: Option<String>,
-) -> Vec<thread::JoinHandle<()>> {
-    prnt!("entered spawn_capture_handles");
-    if bucket_name.is_some() {
-        let Some(bucket) = bucket_name else { return Vec::new(); };
-        prnt!(&format!("bucket = {}", bucket));
-        spawn_capture_handles_remote(num_pipes, r_fds, bucket)
-    } else {
-        prnt!("bucket name is none");
-        spawn_capture_handles_local(num_pipes, r_fds, dir_path)
-    }
-}
-
-fn spawn_serve_handles(
+fn spawn_serve_handles_local(
     dir_path: PathBuf,
     num_pipes: usize,
     w_fds: Vec<RawFd>
 ) -> Vec<thread::JoinHandle<()>> {
+    prnt!("entered spawn_serve_handles_local");
     (0..num_pipes)
         .map(|i| {
             let w_fd = w_fds[i].clone();
@@ -286,6 +277,7 @@ fn spawn_serve_handles(
                 let mut total_bytes_read = 0;
                 tx.send(format!("thread {} ready to read {} bytes", i.clone(), bytes_to_read))
                         .unwrap();
+                
                 loop {
                     match decoder.read(&mut buffer) {
                         Ok(0) => {
@@ -316,6 +308,67 @@ fn spawn_serve_handles(
         .collect()
 }
 
+fn spawn_serve_handles_remote(
+    bucket: String,
+    num_pipes: usize,
+    w_fds: Vec<RawFd>,
+) -> Vec<thread::JoinHandle<()>> {
+    println!("entered spawn_serve_handles_remote");
+    (0..num_pipes)
+        .map(|i| {
+            println!("entered i = {}",i.clone());
+            let bucket_name = bucket.clone();
+            let w_fd = w_fds[i].clone();
+            let key = format!("img-{}.lz4", i);
+            println!("starting to spawn serve handle for {}", &key);
+            let client = create_s3_client();
+            println!("{} returned from create_s3_client", &key);
+            thread::spawn(move || {
+                let mut total_bytes_written = 0;
+                let mut output_file = unsafe { File::from_raw_fd(w_fd) };
+                let mut buffer = [0; 1048576];
+                println!("finished setup");
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let body = rt.block_on(async {client
+                                        .get_object()
+                                        .bucket(&bucket_name)
+                                        .key(&key)
+                                        .send()
+                                        .await
+                                        .expect("can't find key")
+                                        .body
+                                        .collect()
+                                        .await
+                                        .expect("can't find body")});
+                println!("passed part_body_result");
+                let bytes = body.into_bytes();
+                let cursor = Cursor::new(bytes);
+                let mut decoder = FrameDecoder::new(cursor);
+                loop {
+                    match decoder.read(&mut buffer) {
+                        Ok(0) => {
+                            println!("{}: decoder read {} bytes (total = {})", &key, 0, total_bytes_written);
+                            return
+                        },
+                        Ok(bytes_read) => {
+                            total_bytes_written += bytes_read;
+                            println!("{}: decoder read {} bytes (total = {})", &key, bytes_read, total_bytes_written);
+                            let _ = output_file.write_all(&buffer[..bytes_read])
+                                        .expect("could not write all bytes");
+                        },
+                        Err(e) => {
+                            if e.kind() != io::ErrorKind::Interrupted {
+                                prnt!(&format!("err={}",e));
+                                return;
+                            }
+                        }
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
 fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     for handle in handles {
         match handle.join() {
@@ -325,9 +378,7 @@ fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     }
 }
 
-fn do_capture(dir_path: &Path, num_pipes: usize, remote: bool) -> Result<()> {
-    let bucket_name = if remote { Some("direct-remoting".to_string()) } else { None };
-
+fn do_capture(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut r_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -339,11 +390,11 @@ fn do_capture(dir_path: &Path, num_pipes: usize, remote: bool) -> Result<()> {
         shard_pipes.push(unsafe { File::from_raw_fd(dup_fd) });
     }
 
-    let _ret = create_dir_all(dir_path);
+    let _ret = create_dir_all(dir);
 
-    let gpu_listener = EndpointListener::bind(dir_path, "gpu-capture.sock")?;
-    let criu_listener = EndpointListener::bind(dir_path, "streamer-capture.sock")?;
-    let ced_listener = EndpointListener::bind(dir_path, "ced-capture.sock")?;
+    let gpu_listener = EndpointListener::bind(dir, "gpu-capture.sock")?;
+    let criu_listener = EndpointListener::bind(dir, "streamer-capture.sock")?;
+    let ced_listener = EndpointListener::bind(dir, "ced-capture.sock")?;
     eprintln!("r");
 
     let handle = thread::spawn(move || {
@@ -351,8 +402,11 @@ fn do_capture(dir_path: &Path, num_pipes: usize, remote: bool) -> Result<()> {
     });
     thread::sleep(Duration::from_millis(10));
 
-    let handles = spawn_capture_handles(dir_path.to_path_buf(), num_pipes, r_fds,
-                    bucket_name);
+    let handles = match bucket {
+        Some(s) => spawn_capture_handles_remote(s, num_pipes, r_fds),
+        None => spawn_capture_handles_local(dir.to_path_buf(), num_pipes, r_fds),
+    };
+
     match handle.join() {
         Ok(_) => prnt!("Capture thread completed successfully"),
         Err(e) => prnt!(&format!("Capture thread panicked: {:?}", e)),
@@ -362,7 +416,8 @@ fn do_capture(dir_path: &Path, num_pipes: usize, remote: bool) -> Result<()> {
     Ok(())
 }
 
-fn do_serve(dir_path: &Path, num_pipes: usize) -> Result<()> {
+fn do_serve(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()> {
+    prnt!("entered do_serve");
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut w_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -373,22 +428,36 @@ fn do_serve(dir_path: &Path, num_pipes: usize) -> Result<()> {
         w_fds.push(w_fd);
         shard_pipes.push(unsafe { File::from_raw_fd(dup_fd) });
     }
-
-    let handles = spawn_serve_handles(dir_path.to_path_buf(), num_pipes, w_fds);
-    let ced_listener = EndpointListener::bind(dir_path, "ced-serve.sock")?;
-    let gpu_listener = EndpointListener::bind(dir_path, "gpu-serve.sock")?;
-    let criu_listener = EndpointListener::bind(dir_path, "streamer-serve.sock")?;
-    let ready_path = dir_path.join("ready");
+    
+    let ced_listener = EndpointListener::bind(dir, "ced-serve.sock")?;
+    let gpu_listener = EndpointListener::bind(dir, "gpu-serve.sock")?;
+    let criu_listener = EndpointListener::bind(dir, "streamer-serve.sock")?;
+    let ready_path = dir.join("ready");
     eprintln!("r");
 
     let handle = thread::spawn(move || {
         let _res = serve(shard_pipes, &ready_path, ced_listener, gpu_listener, criu_listener);
     });
-    join_handles(handles);
+
+    thread::sleep(Duration::from_millis(10));
+
+    let handles = match bucket {
+        Some(ref s) => { 
+            println!("remoting");
+            spawn_serve_handles_remote(s.to_string(), num_pipes, w_fds)
+        },
+        None => {
+            println!("not remoting");
+            spawn_serve_handles_local(dir.to_path_buf(), num_pipes, w_fds)
+        },
+    };
+    println!("finished making handles");
+    
     match handle.join() {
-        Ok(_) => prnt!("Thread completed successfully"),
-        Err(e) => prnt!(&format!("Thread panicked: {:?}", e)),
+        Ok(_) => prnt!("Serve thread completed successfully"),
+        Err(e) => prnt!(&format!("Serve thread panicked: {:?}", e)),
     }
+    join_handles(handles);
 
     Ok(())
 }
@@ -396,13 +465,13 @@ fn do_serve(dir_path: &Path, num_pipes: usize) -> Result<()> {
 fn do_main() -> Result<()> {
     let opts: Opts = Opts::from_args();
 
-    let dir_path_string = &opts.dir;
-    let dir_path = Path::new(&dir_path_string);
+    let bucket = opts.bucket;
+    let dir = Path::new(&opts.dir);
     let num_pipes = opts.num_pipes;
 
     match opts.operation {
-        Operation::Capture => do_capture(dir_path, num_pipes, true),
-        Operation::Serve => do_serve(dir_path, num_pipes),
+        Operation::Capture => do_capture(dir, num_pipes, bucket),
+        Operation::Serve => do_serve(dir, num_pipes, bucket),
     }?;
     Ok(())
 }
