@@ -27,6 +27,7 @@ use crate::{
     impl_ord_by,
     image_store,
     image_store::{ImageStore, ImageFile},
+    prnt,
 };
 use nix::poll::{poll, PollFd, PollFlags};
 use anyhow::{Result, Context};
@@ -57,13 +58,13 @@ use anyhow::{Result, Context};
 /// If we were doing shard to CRIU splices, we could bump the capacity to 4MB.
 #[allow(clippy::identity_op)]
 const CPU_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
-const GPU_PIPE_DESIRED_CAPACITY: i32 = 16*MB as i32;
+const GPU_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 
 /// Data comes in a stream of chunks, which can be as large as 2MB (from capture.rs).
 /// We use 8MB to have four chunks in to avoid stalling the shards.
 /// CPU cache interference experimentally seems minimal, larger sizes help performance.
-const SHARD_PIPE_DESIRED_CAPACITY: i32 = 8*MB as i32;
+const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 struct Shard {
     pipe: UnixPipe,
@@ -232,6 +233,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     }
 
     fn get_next_readable_shard(&mut self) -> Result<Option<&'a mut Shard>> {
+        // heavily investigate here TODO
         // If we just return `self.shard.pop()`, we may deadlock if shard pipes are not independent
         // from each other.
         // This scenario only happens when the capture shards are directly connected to the extract
@@ -244,11 +246,13 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         // We use poll() instead of epoll() because we need to ignore the shards that are in the
         // list of pending markers, and we are not doing async reads to do edge triggers.
         if self.readable_shards.is_empty() {
-            if self.shards.len() <= 1 {
+            prnt!("self.readable_shards.is_empty");
+            if self.shards.len() <= 0 {
                 // If we have no shard to read from, we'll return None.
                 // If we have a single shard to read from, there no need to block in poll()
                 // We return immediately with that shard, even if it is not readable yet as it
                 // won't introduce a deadlock with the capture side.
+                prnt!("self.shards.len ({}) <= 1, returning Ok(self.shards.pop())", self.shards.len());
                 return Ok(self.shards.pop());
             }
 
@@ -258,7 +262,9 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
 
             let timeout = -1;
             let n = poll(&mut poll_fds, timeout)?;
+            prnt!("n = poll(&mut poll_fds, timeout) = {}", n);
             assert!(n > 0); // There should be at least one fd ready.
+            prnt!("n > 0");
 
             // We could use drain_filter() instead of the mem::replace dance, but we'll probably
             // have to use zip(), which complicates the code.
@@ -266,16 +272,22 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 let capacity = self.shards.capacity();
                 std::mem::replace(&mut self.shards, Vec::with_capacity(capacity))
             };
+            prnt!("passed shards def");
             for (shard, poll_fd) in shards.into_iter().zip(poll_fds) {
                 // We can unwrap() safely. It is fair to assume that the kernel returned valid bits
                 // in `revents`.
+                prnt!("in for loop");
                 if !poll_fd.revents().unwrap().is_empty() {
+                    prnt!("!poll_fd.revents().unwrap().is_empty, so pushing shard to readable_shards");
                     self.readable_shards.push(shard);
                 } else {
+                    prnt!("!poll_fd.revents().unwrap().is_empty, so pushing shard to shards");
                     self.shards.push(shard);
                 }
             }
         }
+
+        prnt!("done, popping self.readable_shards");
 
         Ok(self.readable_shards.pop())
     }
@@ -283,6 +295,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     /// Returns successfully when the image has been fully deserialized. This is our main loop.
     pub fn drain_all(&mut self) -> Result<()> {
         while let Some(shard) = self.get_next_readable_shard()? {
+            // prnt!("draining a shard");
             self.drain_shard(shard)?;
         }
         ensure!(self.image_eof, "No shards to read from");
@@ -299,6 +312,8 @@ fn serve_img(
     criu_listener: EndpointListener,
 ) -> Result<()>
 {
+    eprintln!("r");
+    prnt!("entered serve_img");
     let mut ced = ced_listener.into_accept()?;
 
     let mut filenames_of_sent_files = HashSet::new();
@@ -306,7 +321,7 @@ fn serve_img(
         match mem_store.remove(&filename) {
             Some(memory_file) => {
                 filenames_of_sent_files.insert(filename.clone());
-                ced.send_file_reply(true)?; // true means that the file exists.
+                // ced.send_file_reply(true)?; // true means that the file exists.
                 let mut pipe = ced.recv_pipe()?;
                 // Try setting the pipe capacity. Failing is okay.
                 let _ = pipe.set_capacity(CPU_PIPE_DESIRED_CAPACITY);
@@ -321,10 +336,11 @@ fn serve_img(
                 ensure!(!filenames_of_sent_files.contains(&filename),
                     "Cedana is requesting the image file `{}` multiple times. \
                     This is not allowed to keep the memory usage low", &filename);
-                ced.send_file_reply(false)?;
+                // ced.send_file_reply(false)?;
             }
         }
     }
+    prnt!("finished listening to cedana");
 
     let mut criu = criu_listener.into_accept()?;
     // XXX Currently, CRIU reads image files sequentially. If it were to read files in an
@@ -353,16 +369,21 @@ fn serve_img(
             }
         }
         if ready_path.exists() {
+            prnt!("breaking bc ready path exists");
             break;
         }
     }
+    prnt!("finished listening to criu");
 
     let mut gpu = gpu_listener.into_accept()?;
+    prnt!("passed gpu_listener accept");
     while let Some(filename_prefix) = gpu.read_next_file_request()? {
+        prnt!("entered gpu while");
         match mem_store.remove_by_prefix(&filename_prefix) {
             Some((filename, memory_file)) => {
+                prnt!("gpu file {:?}",filename);
                 filenames_of_sent_files.insert(filename.to_string().clone());
-                gpu.send_file_reply(true)?;
+                // gpu.send_file_reply(true)?;
                 let mut pipe = gpu.recv_pipe()?;
                 // Try setting the pipe capacity. Failing is okay.
                 let _ = pipe.set_capacity(GPU_PIPE_DESIRED_CAPACITY);
@@ -377,10 +398,11 @@ fn serve_img(
                 ensure!(!filenames_of_sent_files.contains(&filename_prefix),
                     "cedana-gpu-controller is requesting the image file prefix `{}` multiple times. \
                     This is not allowed to keep the memory usage low", &filename_prefix);
-                gpu.send_file_reply(false)?;
+                // gpu.send_file_reply(false)?;
             }
         }
     }
+    prnt!("finished listening to gpu");
 
     Ok(())
 }
@@ -410,7 +432,10 @@ pub fn serve(
 {
     let mut mem_store = image_store::mem::Store::default();
     let _ = drain_shards_into_img_store(&mut mem_store, shard_pipes)?;
+    prnt!("finished with drain_shards_into.."); // it seems that this happens after serve_img has started?
+    // eprintln!("r");
     serve_img(&mut mem_store, ready_path, ced_listener, gpu_listener, criu_listener)?;
+    prnt!("finished with serve_img");
 
     Ok(())
 }

@@ -51,9 +51,15 @@ pub fn timestamp() -> String {
 
 #[macro_export]
 macro_rules! prnt {
-    ($msg:expr) => {
-        println!("\x1b[90m{}\x1b[0m [\x1b[1m{}\x1b[0m] {}", crate::util::timestamp(), file!(), $msg);
-    };
+    ($msg:expr) => {{
+        print!("\x1b[90m{}\x1b[0m [\x1b[1m{}:{}\x1b[0m] ", crate::util::timestamp(), file!(), line!());
+        println!($msg);
+    }};
+    ($msg:expr, $($arg:expr),*) => {{
+        print!("\x1b[90m{}\x1b[0m [\x1b[1m{}:{}\x1b[0m] ", crate::util::timestamp(), file!(), line!());
+        print!($msg, $($arg),*);
+        println!();
+    }};
 }
 
 /// read_bytes_next() attempts to read exactly the number of bytes requested.
@@ -77,7 +83,7 @@ pub fn read_bytes_next_breaking(src: &mut UnixStream, len: usize, file_path: &Pa
 
     loop {
         let mut poll_fd = [PollFd::new(fd, PollFlags::POLLIN)];
-        let poll_result = poll(&mut poll_fd, 10)?;  // No timeout (-1 means block indefinitely)
+        let poll_result = poll(&mut poll_fd, 10)?;
         if poll_result > 0 {
             if let Some(poll_fd) = poll_fd.get(0) {
                 if poll_fd.revents().unwrap().contains(PollFlags::POLLIN) {
@@ -90,6 +96,7 @@ pub fn read_bytes_next_breaking(src: &mut UnixStream, len: usize, file_path: &Pa
         }
 
         if file_path.exists() {
+            prnt!("ready path exists, breaking from read_bytes_next_breaking");
             return Ok(None);
         }
     }

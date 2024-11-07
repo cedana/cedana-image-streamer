@@ -17,11 +17,11 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use nix::unistd::{close, pipe};
 use std::{
     fs::File,
-    io::{self, BufWriter, Read, Write, Seek, SeekFrom},
+    io::{self, Read, Write},
     os::unix::io::{FromRawFd, RawFd},
     path::{Path, PathBuf},
     thread,
-    time::Duration,
+    // time::Duration,
 };
 use std::{
     io::Cursor,
@@ -74,14 +74,9 @@ fn spawn_capture_handles_local(
             let path = dir_path.clone();
             thread::spawn(move || {
                 let output_file_path = path.join(&format!("img-{}.lz4", i));
-                let mut output_file = File::create(&output_file_path)
+                let output_file = File::create(&output_file_path)
                                     .expect("Unable to create output file path");
-                let mut total_bytes_read: u64 = 0;
-                let size_placeholder = [0u8; 8];
-                output_file.write_all(&size_placeholder)
-                    .expect("Could not write size placeholder");
-                let mut buf_writer = BufWriter::new(output_file);
-                let mut encoder = FrameEncoder::new(&mut buf_writer);
+                let mut encoder = FrameEncoder::new(output_file);
                 let mut input_file = unsafe { File::from_raw_fd(r_fd) };
                 let mut buffer = [0; 1048576];
                 loop {
@@ -89,26 +84,16 @@ fn spawn_capture_handles_local(
                         Ok(0) => {
                             let _ = close(r_fd);
                             let _ = encoder.finish();
-                            // prepend uncompressed size
-                            let mut output_file = buf_writer.into_inner()
-                                .expect("Could not get file back from buf writer");
-                            output_file.seek(SeekFrom::Start(0))
-                                .expect("Could not seek to start");
-                            output_file.write_all(&total_bytes_read.to_le_bytes())
-                                .expect("Could not write total uncompressed size");
-                            output_file.flush().expect("Failed to flush BufWriter");
-
                             return;
                         }
                         Ok(bytes_read) => {
-                            total_bytes_read += bytes_read as u64;
                             encoder.write_all(&buffer[..bytes_read])
                                             .expect("Unable to write all bytes");
                             encoder.flush().expect("Failed to flush encoder");
                         },
                         Err(e) => {
                             if e.kind() != io::ErrorKind::Interrupted {
-                                prnt!(&format!("err={}",e));
+                                prnt!("err={}",e);
                                 return;
                             }
                         }
@@ -148,7 +133,7 @@ async fn upload_part(
 ) -> CompletedPart {
     let part = client
         .upload_part()
-        .bucket(bucket)
+        .buc    ket(bucket)
         .key(key)
         .upload_id(upload_id)
         .part_number(part_number)
@@ -198,7 +183,7 @@ fn spawn_capture_handles_remote(
             let client = create_s3_client();
             thread::spawn(move || {
                 let key = format!("img-{}.lz4", i);
-                prnt!(&format!("key = {}",key));
+                prnt!("key = {}",key);
                 let runtime = Runtime::new().expect("Failed to create Tokio runtime");
                 let upload_id = runtime.block_on(async {
                     initiate_multipart_upload(&client, &bucket_name, &key).await
@@ -208,30 +193,41 @@ fn spawn_capture_handles_remote(
                 let mut part_number = 1;
                 let mut encoder = FrameEncoder::new(Vec::new());
                 let mut input_file = unsafe { File::from_raw_fd(r_fd) };
-                let mut buffer = [0; 1048576];
+                let mut buffer = vec![0; 5242880];
                 loop {
                     match input_file.read(&mut buffer) {
                         Ok(0) => {
+                            prnt!("thread {} read {} bytes and total = {}", i.clone(), 0, total_bytes_read);
                             let _ = close(r_fd);
-                            if let Ok(compressed_data) = encoder.finish() {
+                            prnt!("encoder.get_ref().len() before last drain [{}]",encoder.get_ref().len());
+                            encoder.flush().expect("Failed to flush encoder");
+                            prnt!("encoder.get_ref().len() after flush [{}]",encoder.get_ref().len());
+                            let compressed_data = encoder.get_mut().drain(..).collect();
+                            prnt!("encoder.get_ref().len() after last drain [{}]",encoder.get_ref().len());
+                            if let Ok(_) = encoder.finish() {
+                                prnt!("encoder.finish returned ok");
                                 let completed_part = runtime.block_on(async {
                                     upload_part(&client, &bucket_name, &key, &upload_id, part_number, compressed_data).await
                                 });
                                 completed_parts.push(completed_part);
+                            } else {
+                                prnt!("encoder.finish returned err");
                             }
                             runtime.block_on(async {
                                 complete_multipart_upload(&client, &bucket_name, &key, &upload_id, completed_parts.clone()).await;
                             });
-                            eprintln!("total_bytes_read = {}", total_bytes_read);
-                            let _ = close(r_fd);
+                            prnt!("total_bytes_read = {}", total_bytes_read);
                             return;
                         }
                         Ok(bytes_read) => {
                             total_bytes_read += bytes_read as u64;
-                            println!("thread {} read {} bytes and total = {}", i.clone(), bytes_read, total_bytes_read);
+                            prnt!("thread {} read {} bytes and total = {}", i.clone(), bytes_read, total_bytes_read);
                             encoder.write_all(&buffer[..bytes_read]).expect("Unable to write bytes");
-                            if encoder.get_ref().len() > 5 * 1024 * 1024 { // 5MB minimum for S3?
+                            encoder.flush().expect("Failed to flush encoder");
+                            prnt!("encoder.get_ref().len() [{}] vs. 1048576", encoder.get_ref().len());
+                            if encoder.get_ref().len() >= 5242880 { // minimum allowed size for S3
                                 let compressed_data = encoder.get_mut().drain(..).collect();
+                                prnt!("encoder.get_ref().len() after drain [{}]",encoder.get_ref().len());
                                 let completed_part = runtime.block_on(async {
                                     upload_part(&client, &bucket_name, &key, &upload_id, part_number, compressed_data).await
                                 });
@@ -265,106 +261,112 @@ fn spawn_serve_handles_local(
             let (tx, rx) = mpsc::channel();
             let handle = thread::spawn(move || {
                 let input_file_path = path.join(&format!("img-{}.lz4", i));
-                let mut input_file = File::open(&input_file_path)
+                let input_file = File::open(&input_file_path)
                                         .expect("Unable to open input file path");
-                // get prepended uncompressed size
-                let mut size_buf = [0u8; 8];
-                input_file.read_exact(&mut size_buf).expect("Could not read decompressed size");
-                let bytes_to_read = u64::from_le_bytes(size_buf);
                 let mut output_file = unsafe { File::from_raw_fd(w_fd) };
                 let mut decoder = FrameDecoder::new(input_file);
-                let mut buffer = [0; 1048576];
-                let mut total_bytes_read = 0;
-                tx.send(format!("thread {} ready to read {} bytes", i.clone(), bytes_to_read))
-                        .unwrap();
+                let mut buffer = vec![0; 1048576];
+                tx.send(format!("thread {} ready to read bytes", i.clone())).unwrap();
                 
                 loop {
                     match decoder.read(&mut buffer) {
                         Ok(0) => {
-                            if total_bytes_read == bytes_to_read {
-                                return;
-                            }
+                            return;
                         }
                         Ok(bytes_read) => {
-                            total_bytes_read += bytes_read as u64;
                             let _ = output_file.write_all(&buffer[..bytes_read])
                                         .expect("could not write all bytes");
+                            // thread::sleep(Duration::from_millis(100));
                         },
                         Err(e) => {
                             if e.kind() != io::ErrorKind::Interrupted {
-                                prnt!(&format!("err={}",e));
+                                prnt!("err={}",e);
                                 return;
                             }
                         }
                     }
                 }
+                // })
             });
             match rx.recv() {
-                Ok(message) => prnt!(message),
-                Err(e) => prnt!(&format!("Failed to receive message: {}", e)),
+                Ok(message) => { prnt!("Received message: {}", message); },
+                Err(e) => { prnt!("Failed to receive message: {}", e); },
             };
             handle
         })
         .collect()
 }
 
-fn spawn_serve_handles_remote(
+fn spawn_serve_handles_remote( // should be finishing earlier
     bucket: String,
     num_pipes: usize,
     w_fds: Vec<RawFd>,
 ) -> Vec<thread::JoinHandle<()>> {
-    println!("entered spawn_serve_handles_remote");
+    prnt!("entered spawn_serve_handles_remote");
     (0..num_pipes)
         .map(|i| {
-            println!("entered i = {}",i.clone());
+            prnt!("entered i = {}",i.clone());
             let bucket_name = bucket.clone();
             let w_fd = w_fds[i].clone();
             let key = format!("img-{}.lz4", i);
-            println!("starting to spawn serve handle for {}", &key);
+            prnt!("starting to spawn serve handle for {}", &key);
             let client = create_s3_client();
-            println!("{} returned from create_s3_client", &key);
-            thread::spawn(move || {
+            prnt!("{} returned from create_s3_client", &key);
+            let (tx, rx) = mpsc::channel();
+            let handle = thread::spawn(move || {
                 let mut total_bytes_written = 0;
                 let mut output_file = unsafe { File::from_raw_fd(w_fd) };
-                let mut buffer = [0; 1048576];
-                println!("finished setup");
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let body = rt.block_on(async {client
-                                        .get_object()
-                                        .bucket(&bucket_name)
-                                        .key(&key)
-                                        .send()
-                                        .await
-                                        .expect("can't find key")
-                                        .body
-                                        .collect()
-                                        .await
-                                        .expect("can't find body")});
-                println!("passed part_body_result");
-                let bytes = body.into_bytes();
-                let cursor = Cursor::new(bytes);
-                let mut decoder = FrameDecoder::new(cursor);
-                loop {
-                    match decoder.read(&mut buffer) {
-                        Ok(0) => {
-                            println!("{}: decoder read {} bytes (total = {})", &key, 0, total_bytes_written);
-                            return
-                        },
-                        Ok(bytes_read) => {
-                            total_bytes_written += bytes_read;
-                            println!("{}: decoder read {} bytes (total = {})", &key, bytes_read, total_bytes_written);
-                            let _ = output_file.write_all(&buffer[..bytes_read])
-                                        .expect("could not write all bytes");
-                        },
-                        Err(e) => {
-                            if e.kind() != io::ErrorKind::Interrupted {
-                                prnt!(&format!("err={}",e));
-                                return;
+                let mut buffer = vec![0; 1048576];
+                prnt!("finished setup");
+                let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+                prnt!("created runtime");
+                runtime.block_on(async {
+                    prnt!("entered runtime");
+                    let body = client
+                                .get_object()
+                                .bucket(&bucket_name)
+                                .key(&key)
+                                .send()
+                                .await
+                                .expect("can't find key")
+                                .body
+                                .collect()
+                                .await
+                                .expect("can't find body");
+                    prnt!("passed part_body_result");
+                    // memory issue due to holding this all in memory?
+                    let bytes = body.into_bytes();
+                    let cursor = Cursor::new(bytes);
+                    let mut decoder = FrameDecoder::new(cursor);
+                    tx.send(format!("thread {} ready to read", i.clone())).unwrap();
+                    loop {
+                        match decoder.read(&mut buffer) {
+                            Ok(0) => {
+                                prnt!("{}: decoder read {} bytes (total = {})", &key, 0, total_bytes_written);
+                                // drop(decoder);
+                                return
+                            },
+                            Ok(bytes_read) => {
+                                total_bytes_written += bytes_read;
+                                prnt!("{}: decoder read {} bytes (total = {})", &key, bytes_read, total_bytes_written);
+                                let _ = output_file.write_all(&buffer[..bytes_read])
+                                            .expect("could not write all bytes");
+                            },
+                            Err(e) => {
+                                if e.kind() != io::ErrorKind::Interrupted {
+                                    prnt!("err={}",e);
+                                    return;
+                                }
                             }
                         }
                     }
-                }
-            })
+                });
+            });
+            match rx.recv() {
+                Ok(message) => { prnt!("Received message: {}", message); },
+                Err(e) => { prnt!("Failed to receive message: {}", e); },
+            };
+            handle
         })
         .collect()
 }
@@ -372,8 +374,8 @@ fn spawn_serve_handles_remote(
 fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     for handle in handles {
         match handle.join() {
-            Ok(_) => prnt!("Shard thread completed successfully"),
-            Err(e) => prnt!(&format!("Shard thread panicked: {:?}", e)),
+            Ok(_) => { prnt!("Shard thread completed successfully"); },
+            Err(e) => { prnt!("Shard thread panicked: {:?}", e); },
         }
     }
 }
@@ -400,7 +402,7 @@ fn do_capture(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()
     let handle = thread::spawn(move || {
         let _res = capture(shard_pipes, gpu_listener, criu_listener, ced_listener);
     });
-    thread::sleep(Duration::from_millis(10));
+    // thread::sleep(Duration::from_millis(1000));
 
     let handles = match bucket {
         Some(s) => spawn_capture_handles_remote(s, num_pipes, r_fds),
@@ -408,8 +410,8 @@ fn do_capture(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()
     };
 
     match handle.join() {
-        Ok(_) => prnt!("Capture thread completed successfully"),
-        Err(e) => prnt!(&format!("Capture thread panicked: {:?}", e)),
+        Ok(_) => { prnt!("Capture thread completed successfully"); },
+        Err(e) => { prnt!("Capture thread panicked: {:?}", e); },
     }
     join_handles(handles);
 
@@ -423,7 +425,7 @@ fn do_serve(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()> 
     for _ in 0..num_pipes {
         let (r_fd, w_fd): (RawFd, RawFd) = pipe()?;
         let dup_fd = unsafe { dup(r_fd) };
-        close(r_fd).expect("Failed to close original write file descriptor");
+        close(r_fd).expect("Failed to close original read file descriptor");
 
         w_fds.push(w_fd);
         shard_pipes.push(unsafe { File::from_raw_fd(dup_fd) });
@@ -433,31 +435,35 @@ fn do_serve(dir: &Path, num_pipes: usize, bucket: Option<String>) -> Result<()> 
     let gpu_listener = EndpointListener::bind(dir, "gpu-serve.sock")?;
     let criu_listener = EndpointListener::bind(dir, "streamer-serve.sock")?;
     let ready_path = dir.join("ready");
-    eprintln!("r");
 
-    let handle = thread::spawn(move || {
+    let handle = thread::spawn(move || { // should be taking longer
         let _res = serve(shard_pipes, &ready_path, ced_listener, gpu_listener, criu_listener);
     });
-
-    thread::sleep(Duration::from_millis(10));
+    // thread::sleep(Duration::from_millis(1000));
 
     let handles = match bucket {
         Some(ref s) => { 
-            println!("remoting");
-            spawn_serve_handles_remote(s.to_string(), num_pipes, w_fds)
+            prnt!("remoting");
+            spawn_serve_handles_remote(s.to_string(), num_pipes, w_fds.clone())
         },
         None => {
-            println!("not remoting");
-            spawn_serve_handles_local(dir.to_path_buf(), num_pipes, w_fds)
+            prnt!("not remoting");
+            spawn_serve_handles_local(dir.to_path_buf(), num_pipes, w_fds.clone())
         },
     };
-    println!("finished making handles");
+    prnt!("finished making handles");
     
+    join_handles(handles); // taking much much longer in remote case
+    // eprintln!("r");
+
     match handle.join() {
         Ok(_) => prnt!("Serve thread completed successfully"),
-        Err(e) => prnt!(&format!("Serve thread panicked: {:?}", e)),
+        Err(e) => prnt!("Serve thread panicked: {:?}", e),
     }
-    join_handles(handles);
+
+    // for w in w_fds {
+    //     close(w).expect("failed to close w_fd");
+    // }
 
     Ok(())
 }
