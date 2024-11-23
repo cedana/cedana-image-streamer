@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crossbeam_utils::Backoff;
 use image_streamer::{
     capture::capture,
     endpoint_connection::EndpointListener,
@@ -40,6 +41,9 @@ struct Opts {
     operation: Operation,
     #[structopt(short, long)]
     num_pipes: usize,
+    /// Indicates whether gpu-controller will be used for this capture/extract operation
+    #[structopt(long)]
+    gpu: bool,
 }
 
 #[derive(StructOpt, PartialEq, Debug)]
@@ -67,20 +71,28 @@ fn spawn_capture_handles(
                 let output_file_path = path.join(&format!("img-{}.lz4", i));
                 let output_file = File::create(&output_file_path)
                                     .expect("Unable to create output file path");
+                let ready_path = path.join("ckpt");
+                prnt!("ready_path = {:?}", ready_path);
                 let mut encoder = FrameEncoder::new(output_file);
                 let mut input_file = unsafe { File::from_raw_fd(r_fd) };
                 let mut buffer = vec![0; 1048576];
+                let backoff = Backoff::new();
                 loop {
                     match input_file.read(&mut buffer) {
                         Ok(0) => {
-                            let _ = close(r_fd);
-                            let _ = encoder.finish();
-                            return;
+                            if ready_path.exists() {
+                                let _ = close(r_fd);
+                                let _ = encoder.finish();
+                                return;
+                            }
+                            prnt!("ready path {:?} does not exist", ready_path);
+                            backoff.snooze();
                         }
                         Ok(bytes_read) => {
                             encoder.write_all(&buffer[..bytes_read])
                                             .expect("Unable to write all bytes");
                             encoder.flush().expect("Failed to flush encoder");
+                            backoff.reset();
                         },
                         Err(e) => {
                             if e.kind() != io::ErrorKind::Interrupted {
@@ -142,11 +154,12 @@ fn spawn_serve_handles(
 
 fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     for handle in handles {
-        let _ = handle.join().unwrap();
+        let _ = handle.join().expect("failed to join lz4 handle");
+        prnt!("joined lz4 handle");
     }
 }
 
-fn do_capture(dir_path: &Path, num_pipes: usize) -> Result<()> {
+fn do_capture(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut r_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -160,7 +173,12 @@ fn do_capture(dir_path: &Path, num_pipes: usize) -> Result<()> {
 
     let _ret = create_dir_all(dir_path);
 
-    let gpu_listener = EndpointListener::bind(dir_path, "gpu-capture.sock")?;
+    let gpu_listener;
+    if gpu {
+        gpu_listener = Some(EndpointListener::bind(dir_path, "gpu-capture.sock")?);
+    } else {
+        gpu_listener = None;
+    }
     let criu_listener = EndpointListener::bind(dir_path, "streamer-capture.sock")?;
     let ced_listener = EndpointListener::bind(dir_path, "ced-capture.sock")?;
     eprintln!("r");
@@ -180,7 +198,7 @@ fn do_capture(dir_path: &Path, num_pipes: usize) -> Result<()> {
     Ok(())
 }
 
-fn do_serve(dir_path: &Path, num_pipes: usize) -> Result<()> {
+fn do_serve(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut w_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -192,20 +210,26 @@ fn do_serve(dir_path: &Path, num_pipes: usize) -> Result<()> {
         shard_pipes.push(unsafe { File::from_raw_fd(dup_fd) });
     }
 
-    let handles = spawn_serve_handles(dir_path.to_path_buf(), num_pipes, w_fds);
+    let path = dir_path.to_path_buf();
+    let handles = spawn_serve_handles(path, num_pipes, w_fds);
     let ced_listener = EndpointListener::bind(dir_path, "ced-serve.sock")?;
-    let gpu_listener = EndpointListener::bind(dir_path, "gpu-serve.sock")?;
+    let gpu_listener;
+    if gpu {
+        gpu_listener = Some(EndpointListener::bind(dir_path, "gpu-serve.sock")?);
+    } else {
+        gpu_listener = None;
+    }
     let criu_listener = EndpointListener::bind(dir_path, "streamer-serve.sock")?;
     eprintln!("r");
 
     let handle = thread::spawn(move || {
         let _res = serve(shard_pipes, ced_listener, gpu_listener, criu_listener);
     });
-    join_handles(handles);
     match handle.join() {
         Ok(_) => prnt!("Serve thread completed successfully"),
         Err(e) => prnt!("Serve thread panicked: {:?}", e),
     }
+    join_handles(handles);
 
     Ok(())
 }
@@ -243,10 +267,11 @@ fn do_main() -> Result<()> {
     let dir_path_string = &opts.dir;
     let dir_path = Path::new(&dir_path_string);
     let num_pipes = opts.num_pipes;
+    let gpu = opts.gpu;
 
     match opts.operation {
-        Operation::Capture => do_capture(dir_path, num_pipes),
-        Operation::Serve => do_serve(dir_path, num_pipes),
+        Operation::Capture => do_capture(dir_path, num_pipes, gpu),
+        Operation::Serve => do_serve(dir_path, num_pipes, gpu),
         Operation::Extract => do_extract(dir_path, num_pipes),
     }?;
     Ok(())
