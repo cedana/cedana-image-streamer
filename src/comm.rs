@@ -12,7 +12,8 @@ use libc::dup;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use nix::unistd::{close, pipe};
 use std::{
-    fs::File,
+    collections::HashSet,
+    fs::{self, File},
     io::{self, Read, Write},
     os::unix::io::{FromRawFd, RawFd},
     path::{Path, PathBuf},
@@ -41,7 +42,7 @@ struct Opts {
     operation: Operation,
     #[structopt(short, long)]
     num_pipes: usize,
-    /// Indicates whether gpu-controller will be used for this capture/extract operation
+    /// Indicates whether gpu-controller will be used for the capture operation
     #[structopt(long)]
     gpu: bool,
 }
@@ -61,14 +62,17 @@ enum Operation {
 fn spawn_capture_handles(
     dir_path: PathBuf,
     num_pipes: usize,
-    r_fds: Vec<RawFd>
+    r_fds: Vec<RawFd>,
+    use_gpu: bool,
 ) -> Vec<thread::JoinHandle<()>> {
     (0..num_pipes)
         .map(|i| {
             let r_fd = r_fds[i].clone();
             let path = dir_path.clone();
             thread::spawn(move || {
-                let output_file_path = path.join(&format!("img-{}.lz4", i));
+                let prefix = if use_gpu { "img-w-gpu-" } else { "img-" };
+                let filename = &format!("{}{}.lz4", prefix, i);
+                let output_file_path = path.join(filename);
                 let output_file = File::create(&output_file_path)
                                     .expect("Unable to create output file path");
                 let ready_path = path.join("ckpt");
@@ -110,15 +114,18 @@ fn spawn_capture_handles(
 fn spawn_serve_handles(
     dir_path: PathBuf,
     num_pipes: usize,
-    w_fds: Vec<RawFd>
+    w_fds: Vec<RawFd>,
+    input_prefix: &str,
 ) -> Vec<thread::JoinHandle<()>> {
     (0..num_pipes)
         .map(|i| {
             let w_fd = w_fds[i].clone();
             let path = dir_path.clone();
             let (tx, rx) = mpsc::channel();
+            let prefix = input_prefix.to_string();
             let handle = thread::spawn(move || {
-                let input_file_path = path.join(&format!("img-{}.lz4", i));
+                let input_file_path = path.join(&format!("{}{}.lz4", &prefix, i));
+                prnt!("input_file_path = {:?}", input_file_path);
                 let input_file = File::open(&input_file_path)
                                         .expect("Unable to open input file path");
                 let mut output_file = unsafe { File::from_raw_fd(w_fd) };
@@ -159,7 +166,7 @@ fn join_handles(handles: Vec<thread::JoinHandle<()>>) {
     }
 }
 
-fn do_capture(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
+fn do_capture(dir_path: &Path, num_pipes: usize, use_gpu: bool) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut r_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -174,7 +181,7 @@ fn do_capture(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     let _ret = create_dir_all(dir_path);
 
     let gpu_listener;
-    if gpu {
+    if use_gpu {
         gpu_listener = Some(EndpointListener::bind(dir_path, "gpu-capture.sock")?);
     } else {
         gpu_listener = None;
@@ -188,7 +195,7 @@ fn do_capture(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     });
     thread::sleep(Duration::from_millis(10));
 
-    let handles = spawn_capture_handles(dir_path.to_path_buf(), num_pipes, r_fds);
+    let handles = spawn_capture_handles(dir_path.to_path_buf(), num_pipes, r_fds, use_gpu);
     match handle.join() {
         Ok(_) => prnt!("Capture thread completed successfully"),
         Err(e) => prnt!("Capture thread panicked: {:?}", e),
@@ -198,7 +205,32 @@ fn do_capture(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     Ok(())
 }
 
-fn do_serve(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
+fn find_prefix_in_directory(directory: &Path) -> String {
+    let entries = fs::read_dir(directory).unwrap();
+    let mut prefixes = HashSet::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let file_name = entry.file_name().into_string().unwrap();
+                if file_name.starts_with("img-") {
+                    if file_name.starts_with("img-w-gpu-") {
+                        prefixes.insert("img-w-gpu-".to_string());
+                    } else {
+                        prefixes.insert("img-".to_string());
+                    }
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    match prefixes.len() {
+        1 => prefixes.into_iter().next().expect("can't get prefix"), // 1 prefix found
+        _ => "".to_string(), // either no prefixes or both found -> error
+    }
+}
+
+fn do_serve(dir_path: &Path, num_pipes: usize, file_prefix: String) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut w_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -211,10 +243,10 @@ fn do_serve(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     }
 
     let path = dir_path.to_path_buf();
-    let handles = spawn_serve_handles(path, num_pipes, w_fds);
+    let handles = spawn_serve_handles(path, num_pipes, w_fds, &file_prefix);
     let ced_listener = EndpointListener::bind(dir_path, "ced-serve.sock")?;
     let gpu_listener;
-    if gpu {
+    if &file_prefix == "img-w-gpu-" {
         gpu_listener = Some(EndpointListener::bind(dir_path, "gpu-serve.sock")?);
     } else {
         gpu_listener = None;
@@ -234,7 +266,7 @@ fn do_serve(dir_path: &Path, num_pipes: usize, gpu: bool) -> Result<()> {
     Ok(())
 }
 
-fn do_extract(dir_path: &Path, num_pipes: usize) -> Result<()> {
+fn do_extract(dir_path: &Path, num_pipes: usize, file_prefix: String) -> Result<()> {
     let mut shard_pipes: Vec<UnixPipe> = Vec::new();
     let mut w_fds: Vec<RawFd> = Vec::new();
     for _ in 0..num_pipes {
@@ -246,8 +278,10 @@ fn do_extract(dir_path: &Path, num_pipes: usize) -> Result<()> {
         shard_pipes.push(unsafe { File::from_raw_fd(dup_fd) });
     }
 
+    let _ret = create_dir_all(dir_path);
+
     let dir_cp = dir_path.to_path_buf();
-    let handles = spawn_serve_handles(dir_cp.clone(), num_pipes, w_fds);
+    let handles = spawn_serve_handles(dir_cp.clone(), num_pipes, w_fds, &file_prefix);
     let handle = thread::spawn(move || {
         let _res = extract(&dir_cp, shard_pipes);
     });
@@ -261,6 +295,16 @@ fn do_extract(dir_path: &Path, num_pipes: usize) -> Result<()> {
     Ok(())
 }
 
+fn check_for_gpu(dir_path: &Path) -> String {
+    let file_prefix = find_prefix_in_directory(dir_path);
+    if file_prefix == "img-w-gpu-" {
+        prnt!("checkpoint contains GPU files");
+    } else {
+        prnt!("checkpoint does not contain GPU files");
+    }
+    file_prefix
+}
+
 fn do_main() -> Result<()> {
     let opts: Opts = Opts::from_args();
 
@@ -271,8 +315,20 @@ fn do_main() -> Result<()> {
 
     match opts.operation {
         Operation::Capture => do_capture(dir_path, num_pipes, gpu),
-        Operation::Serve => do_serve(dir_path, num_pipes, gpu),
-        Operation::Extract => do_extract(dir_path, num_pipes),
+        Operation::Serve => {
+            let prefix = check_for_gpu(dir_path);
+            if prefix == "" {
+                return Err(anyhow::anyhow!("both/no file prefix found in {:?}", dir_path))
+            }
+            do_serve(dir_path, num_pipes, prefix)
+        },
+        Operation::Extract => {
+            let prefix = check_for_gpu(dir_path);
+            if prefix == "" {
+                return Err(anyhow::anyhow!("both/no file prefix found in {:?}", dir_path))
+            }
+            do_extract(dir_path, num_pipes, prefix)
+        },
     }?;
     Ok(())
 }

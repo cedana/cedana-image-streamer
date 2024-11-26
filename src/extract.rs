@@ -432,8 +432,6 @@ pub fn extract(images_dir: &Path,
     shard_pipes: Vec<UnixPipe>,
 ) -> Result<()>
 {
-    create_dir_all(images_dir)?;
-
     // extract on disk
     let mut file_store = image_store::fs::Store::new(images_dir);
     let _ = drain_shards_into_img_store(&mut file_store, shard_pipes)?;
