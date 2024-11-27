@@ -88,6 +88,9 @@ jobs:
           whereiscriu=$(whereis criu)
           echo "installed criu at $whereiscriu"
       - name: Run regression tests
+        env:
+          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_API_KEY: ${{ secrets.CEDANA_API_KEY }}
         run: |
           echo "pwd = $PWD"
           echo "ls -l = $(ls -l)"
