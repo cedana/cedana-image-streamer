@@ -7,4 +7,4 @@ endif
 export CONTAINER_TERMINAL
 
 regression:
-	sh -x regression-test.sh || (echo "Regression test failed" && exit 1)
+	./regression-test.sh -x || (echo "Regression test failed" && exit 1)
