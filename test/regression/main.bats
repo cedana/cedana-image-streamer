@@ -38,7 +38,7 @@ teardown() {
     local job_id="workload-stream-1"
 
     # execute and checkpoint with streaming
-    exec_task $task $job_id
+    exec_task "sh -x workload.sh" $job_id
     sleep 1 3>-
     checkpoint_task $job_id /tmp --stream 4
     [[ "$status" -eq 0 ]]
