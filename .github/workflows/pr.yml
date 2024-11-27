@@ -92,7 +92,7 @@ jobs:
           git checkout $BRANCH
           go build
           sudo cp cedana /usr/bin/
-          popd cedana
+          popd
           export CEDANA_CLI_WAIT_FOR_READY=true
       - name: Run regression tests
         env:
