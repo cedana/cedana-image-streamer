@@ -69,24 +69,31 @@ jobs:
           CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU }}
         run: |
           TAG=latest
-
-          # Install cedana daemon
-          sudo apt install alien
-          url=$(wget -qO- https://api.github.com/repos/cedana/cedana/releases/latest \
-                | grep browser_download_url | grep rpm | cut -d '"' -f 4)
-          wget -O latest.rpm $url
-          sudo alien -d latest.rpm
-          sudo apt-get install -f
-          sudo dpkg -i *.deb
-          whereiscedana=$(whereis cedana)
-          echo "installed cedana at $whereiscedana"
-
           # Install CRIU
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
           whereiscriu=$(whereis criu)
           echo "installed criu at $whereiscriu"
+      - name: Build cedana daemon
+        run: |
+          # Install dependencies
+          sudo apt update
+          sudo apt install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xvzf go1.22.0.linux-amd64.tar.gz
+          export PATH=$PATH:/usr/local/go/bin
+          go version
+
+          # Install cedana daemon
+          BRANCH="feature/ced-815-fix-cedana-image-streamer-breaking-due-to-moving-gpu-restore"
+          git clone git@github.com:cedana/cedana.git
+          pushd cedana
+          git checkout $BRANCH
+          ./build-start-daemon.sh
+          sudo cp cedana /usr/bin/
+          popd cedana
+          export CEDANA_CLI_WAIT_FOR_READY=true
       - name: Run regression tests
         env:
           CEDANA_URL: ${{ secrets.CEDANA_URL }}
