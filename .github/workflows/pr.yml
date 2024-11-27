@@ -1,0 +1,81 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+jobs:
+  build:
+    name: Build
+    runs-on: ubicloud-standard-8
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt -y install protobuf-compiler
+
+          # Install rust
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+          # Install bats
+          git clone https://github.com/bats-core/bats-core.git
+          pushd bats-core
+          ./install.sh /usr/local
+          popd && rm -rf bats-core
+      - name: Build cedana-image-streamer
+        run: |
+          cargo build --release --bin cedana-image-streamer
+          ls_out=$(ls -l target/release/cedana-image-streamer)
+          echo "ls -l target/release/cedana-image-streamer"
+          echo $ls_out
+      - name: Upload cedana-image-streamer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedana-image-streamer
+          path: target/release/cedana-image-streamer
+
+  regression-test:
+    name: Regression tests
+    runs-on: ubicloud-standard-8
+    needs: build
+    steps:
+      - name: Download cedana-image-streamer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cedana-image-streamer
+      - name: Add cedana-image-streamer to $PATH
+        run: |
+          chmod +x target/release/cedana-image-streamer
+          sudo cp target/release/cedana-image-streamer /usr/local/
+      - name: Download binaries
+        env:
+          CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU }}
+        run: |
+          TAG=latest
+
+          # Install cedana daemon
+          sudo apt install alien
+          url=$(wget -qO- https://api.github.com/repos/cedana/cedana/releases/latest \
+                | grep browser_download_url | grep rpm | cut -d '"' -f 4)
+          wget -O latest.rpm $url
+          sudo alien -d latest.rpm
+          sudo apt-get install -f
+          sudo dpkg -i *.deb
+          whereiscedana=$(whereis cedana)
+          echo "installed cedana at $whereiscedana"
+
+          # Install CRIU
+          curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
+          chmod +x criu
+          sudo cp criu /usr/local/sbin/
+          whereiscriu=$(whereis criu)
+          echo "installed criu at $whereiscriu"
+      - name: Run regression tests
+        run: sudo -E make -C scripts/ci regression
