@@ -4,7 +4,6 @@ load helper.bash
 
 setup_file() {
     BATS_NO_PARALLELIZE_WITHIN_FILE=true
-    install_cedana
 }
 
 setup() {
