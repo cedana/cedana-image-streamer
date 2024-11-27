@@ -51,6 +51,10 @@ jobs:
         run: |
           chmod +x cedana-image-streamer
           sudo cp cedana-image-streamer /usr/local/
+          whereiscedanaimagestreamer=$(whereis cedana-image-streamer)
+          echo "installed cedana-image-streamer at $whereiscedanaimagestreamer"
+          echo "ls -l /usr/local/cedana-image-streamer = $(ls -l /usr/local/cedana-image-streamer)"
+          echo "PATH = $PATH"
       - name: Install dependencies
         run: |
           # Install bats
@@ -58,7 +62,7 @@ jobs:
           pushd bats-core
           sudo -E ./install.sh /usr/local
           whereisbats=$(whereis bats)
-          echo "installed cedana at $whereisbats"
+          echo "installed bats at $whereisbats"
           popd && rm -rf bats-core
       - name: Download binaries
         env:

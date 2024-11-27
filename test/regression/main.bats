@@ -28,6 +28,7 @@ teardown() {
 }
 
 @test "Dump workload with --stream" {
+    echo "PATH = $PATH"
     local task="./workload.sh"
     local job_id="workload-stream-1"
 
