@@ -105,9 +105,11 @@ jobs:
           sudo -E make -C scripts/ci regression
           echo "ls -l /var/log = $(ls -l /var/log)"
       - name: Check existence of bats logs
+        if: always()
         run: |
           echo "ls -l ~/bats_out: $(ls -l ~/bats_out)"
       - name: Upload bats logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bats_logs
