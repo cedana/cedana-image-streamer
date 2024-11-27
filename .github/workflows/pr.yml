@@ -24,11 +24,6 @@ jobs:
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-          # Install bats
-          git clone https://github.com/bats-core/bats-core.git
-          pushd bats-core
-          sudo -E ./install.sh /usr/local
-          popd && rm -rf bats-core
       - name: Build cedana-image-streamer
         run: |
           cargo build --release --bin cedana-image-streamer
@@ -56,6 +51,15 @@ jobs:
         run: |
           chmod +x cedana-image-streamer
           sudo cp cedana-image-streamer /usr/local/
+      - name: Install dependencies
+        run: |
+          # Install bats
+          git clone https://github.com/bats-core/bats-core.git
+          pushd bats-core
+          sudo -E ./install.sh /usr/local
+          whereisbats=$(whereis bats)
+          echo "installed cedana at $whereisbats"
+          popd && rm -rf bats-core
       - name: Download binaries
         env:
           CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU }}
