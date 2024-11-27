@@ -50,7 +50,7 @@ jobs:
       - name: Add cedana-image-streamer to $PATH
         run: |
           chmod +x cedana-image-streamer
-          sudo cp cedana-image-streamer /usr/local/bin/
+          sudo cp cedana-image-streamer /usr/bin/
           whereiscedanaimagestreamer=$(whereis cedana-image-streamer)
           echo "installed cedana-image-streamer at $whereiscedanaimagestreamer"
           echo "ls -l /usr/local/cedana-image-streamer = $(ls -l /usr/local/cedana-image-streamer)"
