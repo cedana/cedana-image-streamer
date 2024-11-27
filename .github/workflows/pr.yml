@@ -27,7 +27,7 @@ jobs:
           # Install bats
           git clone https://github.com/bats-core/bats-core.git
           pushd bats-core
-          ./install.sh /usr/local
+          sudo -E ./install.sh /usr/local
           popd && rm -rf bats-core
       - name: Build cedana-image-streamer
         run: |
