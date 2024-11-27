@@ -52,8 +52,8 @@ jobs:
           name: cedana-image-streamer
       - name: Add cedana-image-streamer to $PATH
         run: |
-          chmod +x target/release/cedana-image-streamer
-          sudo cp target/release/cedana-image-streamer /usr/local/
+          chmod +x cedana-image-streamer
+          sudo cp cedana-image-streamer /usr/local/
       - name: Download binaries
         env:
           CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU }}
