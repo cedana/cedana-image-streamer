@@ -30,6 +30,8 @@ teardown() {
 @test "Dump workload with --stream" {
     echo "PATH = $PATH"
     echo "where is cedana-image-streamer: $(whereis cedana-image-streamer)"
+    echo "where is date: $(whereis date)"
+    echo "where is sleep: $(whereis sleep)"
     echo "ls -l /usr/bin/cedana-image-streamer: $(ls -l /usr/bin/cedana-image-streamer)"
     echo "ls -l /var/log = $(ls -l /var/log)"
     local task="./workload.sh"
