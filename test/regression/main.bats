@@ -34,7 +34,7 @@ teardown() {
     echo "where is sleep: $(whereis sleep)"
     echo "ls -l /usr/bin/cedana-image-streamer: $(ls -l /usr/bin/cedana-image-streamer)"
     echo "ls -l /var/log = $(ls -l /var/log)"
-    local task="./workload.sh"
+    local task="sh -x workload.sh"
     local job_id="workload-stream-1"
 
     # execute and checkpoint with streaming
