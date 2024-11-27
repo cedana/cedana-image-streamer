@@ -46,6 +46,8 @@ jobs:
     runs-on: ubicloud-standard-8
     needs: build
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Download cedana-image-streamer artifact
         uses: actions/download-artifact@v4
         with:
@@ -78,4 +80,7 @@ jobs:
           whereiscriu=$(whereis criu)
           echo "installed criu at $whereiscriu"
       - name: Run regression tests
-        run: sudo -E make -C scripts/ci regression
+        run: |
+          echo "pwd = $PWD"
+          echo "ls -l = $(ls -l)"
+          sudo -E make -C scripts/ci regression
