@@ -39,6 +39,7 @@ jobs:
   regression-test:
     name: Regression tests
     runs-on: ubicloud-standard-8
+    timeout-minutes: 5
     needs: build
     steps:
       - name: Checkout
@@ -103,3 +104,11 @@ jobs:
           echo "ls -l = $(ls -l)"
           sudo -E make -C scripts/ci regression
           echo "ls -l /var/log = $(ls -l /var/log)"
+      - name: Check existence of bats logs
+        run: |
+          echo "ls -l ~/bats_out: $(ls -l ~/bats_out)"
+      - name: Upload bats logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: bats_logs
+          path: ~/bats_out
