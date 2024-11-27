@@ -92,3 +92,9 @@ jobs:
           echo "pwd = $PWD"
           echo "ls -l = $(ls -l)"
           sudo -E make -C scripts/ci regression
+          echo "ls -l /var/log = $(ls -l /var/log)"
+      - name: Upload cedana-daemon log artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedana-daemon.log
+          path: /var/log/cedana-daemon.log
