@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 function start_cedana() {
-    sudo cedana daemon start $@ &
+    sudo -E cedana daemon start 2>&1 | sudo tee -a /var/log/cedana-daemon.log &
 }
 
 function stop_cedana() {
