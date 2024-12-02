@@ -7,21 +7,6 @@
 ## Look at regression-test main for an example.
 ##
 
-APT_PACKAGES="wget git make curl libnl-3-dev libnet-dev \
-    libbsd-dev libcap-dev libgpgme-dev \
-    btrfs-progs libbtrfs-dev libseccomp-dev libapparmor-dev \
-    libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler \
-    protobuf-compiler python3-protobuf software-properties-common \
-    zip
-"
-
-install_apt_packages() {
-    apt-get update
-    for pkg in $APT_PACKAGES; do
-        apt-get install -y $pkg || echo "failed to install $pkg"
-    done
-}
-
 print_header() {
     echo "############### $1 ###############"
 }
@@ -54,12 +39,6 @@ print_env() {
     print_header "Available CPUs"
     lscpu || :
     set -x
-}
-
-setup_ci_build() {
-    # only CI steps needed for building
-    [ -n "$SKIP_CI_SETUP" ] && return
-    install_apt_packages
 }
 
 source_env() {
