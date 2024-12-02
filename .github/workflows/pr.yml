@@ -103,23 +103,7 @@ jobs:
         env:
           CEDANA_URL: ${{ secrets.CEDANA_URL }}
           CEDANA_API_KEY: ${{ secrets.CEDANA_API_KEY }}
-        run: |
-          echo "pwd = $PWD"
-          echo "ls -l = $(ls -l)"
-          sudo -E make -C scripts/ci regression
-          echo "ls -l /var/log = $(ls -l /var/log)"
-      - name: Check existence of bats logs
-        if: always()
-        run: |
-          echo "ls -l ~/bats_out: $(ls -l ~/bats_out)"
-      - name: Set bats logs permissions
-        run: sudo chmod -R 777 ~/bats_out
-      - name: Upload bats logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bats_logs
-          path: ~/bats_out
+        run: sudo -E make -C scripts/ci regression
       - name: Upload cedana-daemon log
         if: always()
         uses: actions/upload-artifact@v4
