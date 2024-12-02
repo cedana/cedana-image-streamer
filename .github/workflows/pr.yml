@@ -36,8 +36,8 @@ jobs:
           BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
         run: |
           # Install dependencies
-          sudo apt -qq update
-          sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          sudo apt --quiet=2 update
+          sudo apt --quiet=2 install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
           wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
@@ -47,7 +47,7 @@ jobs:
           git clone https://github.com/cedana/cedana.git
           pushd cedana
           git checkout $BRANCH
-          go build
+          go build > /dev/null
           popd
       - name: Upload cedana daemon artifact
         uses: actions/upload-artifact@v4
@@ -74,14 +74,13 @@ jobs:
         run: |
           chmod +x cedana-image-streamer
           sudo cp cedana-image-streamer /usr/bin/
-          echo "installed cedana-image-streamer at $(whereis cedana-image-streamer)"
+          echo "installed $(whereis cedana-image-streamer)"
       - name: Install bats
         run: |
           # Install bats
           git clone https://github.com/bats-core/bats-core.git
           pushd bats-core
           sudo -E ./install.sh /usr/local
-          echo "installed bats at $(whereis bats)"
           popd && rm -rf bats-core
       - name: Install criu
         env:
@@ -89,17 +88,17 @@ jobs:
         run: |
           TAG=latest
           # Install CRIU
-          sudo apt -qq install libnet1 libprotobuf-c1
+          sudo apt --quiet=2 install libnet1 libprotobuf-c1
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
-          echo "installed criu at $(whereis criu)"
+          echo "installed $(whereis criu)"
           printf "> criu --version\n$(criu --version)"
       - name: Install cedana daemon
         run: |
           # Install dependencies
-          sudo apt -qq update
-          sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          sudo apt --quiet=2 update
+          sudo apt --quiet=2 install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
           wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
@@ -109,7 +108,7 @@ jobs:
           chmod +x cedana
           sudo cp cedana /usr/bin/
           export CEDANA_CLI_WAIT_FOR_READY=true
-          echo "installed cedana at $(whereis cedana)"
+          echo "installed $(whereis cedana)"
           #- name: Setup tmate session
           #  uses: mxschmitt/action-tmate@v3
       - name: Run regression tests
