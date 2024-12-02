@@ -17,8 +17,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
-          sudo apt-get -qq update
-          sudo apt -y -qq install protobuf-compiler
+          sudo apt -qq update
+          sudo apt -qq install protobuf-compiler
 
           # Install rust
           curl https://sh.rustup.rs -sSf | sh -s -- -y
@@ -89,7 +89,7 @@ jobs:
         run: |
           TAG=latest
           # Install CRIU
-          sudo apt-get -qq install libnet1 libprotobuf-c1
+          sudo apt -qq install libnet1 libprotobuf-c1
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
