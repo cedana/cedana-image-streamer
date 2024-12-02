@@ -25,16 +25,35 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build cedana-image-streamer
-        run: |
-          cargo build --release --bin cedana-image-streamer
-          ls_out=$(ls -l target/release/cedana-image-streamer)
-          echo "ls -l target/release/cedana-image-streamer"
-          echo $ls_out
+        run: cargo build --release --bin cedana-image-streamer
       - name: Upload cedana-image-streamer artifact
         uses: actions/upload-artifact@v4
         with:
           name: cedana-image-streamer
           path: target/release/cedana-image-streamer
+      - name: Build cedana daemon
+        env:
+          BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
+        run: |
+          # Install dependencies
+          sudo apt update
+          sudo apt install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xvzf go1.22.0.linux-amd64.tar.gz
+          export PATH=$PATH:/usr/local/go/bin
+          go version
+
+          # Build cedana daemon
+          git clone https://github.com/cedana/cedana.git
+          pushd cedana
+          git checkout $BRANCH
+          go build
+          popd
+      - name: Upload cedana artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedana
+          path: cedana/cedana
 
   regression-test:
     name: Regression tests
@@ -47,6 +66,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cedana-image-streamer
+      - name: Download cedana artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cedana
       - name: Add cedana-image-streamer to $PATH
         run: |
           chmod +x cedana-image-streamer
@@ -77,7 +100,7 @@ jobs:
           whereiscriu=$(whereis criu)
           echo "installed criu at $whereiscriu"
           printf "> criu --version\n$(criu --version)"
-      - name: Build cedana daemon
+      - name: Install cedana daemon
         env:
           BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
         run: |
@@ -90,12 +113,12 @@ jobs:
           go version
 
           # Install cedana daemon
-          git clone https://github.com/cedana/cedana.git
-          pushd cedana
-          git checkout $BRANCH
-          go build
+          #git clone https://github.com/cedana/cedana.git
+          #pushd cedana
+          #git checkout $BRANCH
+          #go build
           sudo cp cedana /usr/bin/
-          popd
+          #popd
           export CEDANA_CLI_WAIT_FOR_READY=true
           #- name: Setup tmate session
           #  uses: mxschmitt/action-tmate@v3
