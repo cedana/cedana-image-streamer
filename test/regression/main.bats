@@ -27,26 +27,54 @@ teardown() {
     sleep 1 3>-
 }
 
+@test "Dump workload without streaming" {
+    local task="./workload.sh"
+    local job_id="workload-without-stream-1"
+    rm -rf /test
+
+    # execute and checkpoint without streaming
+    exec_task $task $job_id
+    sleep 1 3>-
+    checkpoint_task $job_id /test
+    [[ "$status" -eq 0 ]]
+}
+
+@test "Restore workload without streaming" {
+    local task="./workload.sh"
+    local job_id="workload-without-stream-2"
+    rm -rf /test
+
+    # execute, checkpoint, and restore without streaming
+    exec_task $task $job_id
+    sleep 1 3>-
+    checkpoint_task $job_id /test
+    sleep 1 3>-
+    run restore_task $job_id
+    [[ "$status" -eq 0 ]]
+}
+
 @test "Dump workload with --stream" {
     local task="./workload.sh"
     local job_id="workload-stream-1"
+    rm -rf /test
 
     # execute and checkpoint with streaming
     exec_task $task $job_id
     sleep 1 3>-
-    checkpoint_task $job_id /tmp --stream 4
+    checkpoint_task $job_id /test --stream 4
     [[ "$status" -eq 0 ]]
 }
 
-@test "Restore workload with --stream" {
+@test "Restore workload with streaming" {
     local task="./workload.sh"
     local job_id="workload-stream-2"
+    rm -rf /test
 
-    # execute, checkpoint and restore with streaming
+    # execute, checkpoint, and restore with streaming
     exec_task $task $job_id
     sleep 1 3>-
-    checkpoint_task $job_id /tmp --stream 4
+    checkpoint_task $job_id /test --stream 8
     sleep 1 3>-
-    run restore_task $job_id --stream 4
+    run restore_task $job_id --stream 8
     [[ "$status" -eq 0 ]]
 }
