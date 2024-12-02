@@ -107,11 +107,11 @@ jobs:
           #  uses: mxschmitt/action-tmate@v3
       - name: Change kernel settings
         run: |
-          echo 0 > /proc/sys/fs/pipe-user-pages-soft
+          echo 0 | sudo tee /proc/sys/fs/pipe-user-pages-soft > /dev/null
           cat /proc/sys/fs/pipe-user-pages-soft
-          echo 0 > /proc/sys/fs/pipe-user-pages-hard
+          echo 0 | sudo tee /proc/sys/fs/pipe-user-pages-hard > /dev/null
           cat /proc/sys/fs/pipe-user-pages-hard
-          echo $((4*1024*1024)) > /proc/sys/fs/pipe-max-size
+          echo $((4*1024*1024)) | sudo tee /proc/sys/fs/pipe-max-size > /dev/null
           cat /proc/sys/fs/pipe-max-size
       - name: Run regression tests
         env:
