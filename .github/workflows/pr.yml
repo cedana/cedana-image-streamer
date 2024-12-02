@@ -105,6 +105,14 @@ jobs:
           echo "installed $(whereis cedana)"
           #- name: Setup tmate session
           #  uses: mxschmitt/action-tmate@v3
+      - name: Change kernel settings
+        run: |
+          echo 0 > /proc/sys/fs/pipe-user-pages-soft
+          cat /proc/sys/fs/pipe-user-pages-soft
+          echo 0 > /proc/sys/fs/pipe-user-pages-hard
+          cat /proc/sys/fs/pipe-user-pages-hard
+          echo $((4*1024*1024)) > /proc/sys/fs/pipe-max-size
+          cat /proc/sys/fs/pipe-max-size
       - name: Run regression tests
         env:
           CEDANA_URL: ${{ secrets.CEDANA_URL }}

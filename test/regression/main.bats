@@ -53,7 +53,7 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
-@test "Dump workload with --stream" {
+@test "Dump workload with streaming" {
     local task="./workload.sh"
     local job_id="workload-stream-1"
     rm -rf /test
