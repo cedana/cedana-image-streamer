@@ -78,6 +78,8 @@ jobs:
           echo "installed criu at $whereiscriu"
           printf "> criu --version\n$(criu --version)"
       - name: Build cedana daemon
+        env:
+          BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
         run: |
           # Install dependencies
           sudo apt update
@@ -88,7 +90,6 @@ jobs:
           go version
 
           # Install cedana daemon
-          BRANCH="feature/ced-815-fix-cedana-image-streamer-breaking-due-to-moving-gpu-restore"
           git clone https://github.com/cedana/cedana.git
           pushd cedana
           git checkout $BRANCH
