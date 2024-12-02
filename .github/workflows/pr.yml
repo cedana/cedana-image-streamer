@@ -19,11 +19,9 @@ jobs:
         run: |
           sudo apt -qq update
           sudo apt -qq install protobuf-compiler
-
           # Install rust
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Build cedana-image-streamer
         run: cargo build -q --release --bin cedana-image-streamer
       - name: Upload cedana-image-streamer artifact
@@ -36,18 +34,17 @@ jobs:
           BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
         run: |
           # Install dependencies
-          sudo apt --quiet=2 update
-          sudo apt --quiet=2 install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          sudo apt -qq update
+          sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
           wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           go version
-
           # Build cedana daemon
           git clone https://github.com/cedana/cedana.git
           pushd cedana
           git checkout $BRANCH
-          go build > /dev/null
+          go build
           popd
       - name: Upload cedana daemon artifact
         uses: actions/upload-artifact@v4
@@ -77,7 +74,6 @@ jobs:
           echo "installed $(whereis cedana-image-streamer)"
       - name: Install bats
         run: |
-          # Install bats
           git clone https://github.com/bats-core/bats-core.git
           pushd bats-core
           sudo -E ./install.sh /usr/local
@@ -87,8 +83,7 @@ jobs:
           CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU }}
         run: |
           TAG=latest
-          # Install CRIU
-          sudo apt --quiet=2 install libnet1 libprotobuf-c1
+          sudo apt -qq install libnet1 libprotobuf-c1
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
@@ -97,13 +92,12 @@ jobs:
       - name: Install cedana daemon
         run: |
           # Install dependencies
-          sudo apt --quiet=2 update
-          sudo apt --quiet=2 install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
+          sudo apt -qq update
+          sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
           wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           go version
-
           # Install cedana daemon
           chmod +x cedana
           sudo cp cedana /usr/bin/
