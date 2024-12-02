@@ -45,11 +45,11 @@ teardown() {
 }
 
 @test "Restore workload with --stream" {
-    local task="./workload.sh"
+    local task="sh -x workload.sh"
     local job_id="workload-stream-2"
 
     # execute, checkpoint and restore with streaming
-    exec_task $task $job_id
+    exec_task "sh -x workload.sh" $job_id
     sleep 1 3>-
     checkpoint_task $job_id /tmp --stream 4
     sleep 1 3>-
