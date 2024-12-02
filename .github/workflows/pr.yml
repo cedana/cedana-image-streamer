@@ -70,11 +70,13 @@ jobs:
         run: |
           TAG=latest
           # Install CRIU
+          sudo apt-get install libnet1 libprotobuf-c1
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
           whereiscriu=$(whereis criu)
           echo "installed criu at $whereiscriu"
+          echo "> criu --version\n$(criu --version)"
       - name: Build cedana daemon
         run: |
           # Install dependencies
@@ -94,8 +96,8 @@ jobs:
           sudo cp cedana /usr/bin/
           popd
           export CEDANA_CLI_WAIT_FOR_READY=true
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+          #- name: Setup tmate session
+          #  uses: mxschmitt/action-tmate@v3
       - name: Run regression tests
         env:
           CEDANA_URL: ${{ secrets.CEDANA_URL }}
