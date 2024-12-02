@@ -101,8 +101,6 @@ jobs:
           echo "installed criu at $whereiscriu"
           printf "> criu --version\n$(criu --version)"
       - name: Install cedana daemon
-        env:
-          BRANCH: ${{ vars.CEDANA_DAEMON_BRANCH }}
         run: |
           # Install dependencies
           sudo apt update
@@ -117,6 +115,7 @@ jobs:
           #pushd cedana
           #git checkout $BRANCH
           #go build
+          chmod +x cedana
           sudo cp cedana /usr/bin/
           #popd
           export CEDANA_CLI_WAIT_FOR_READY=true
