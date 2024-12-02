@@ -28,28 +28,22 @@ teardown() {
 }
 
 @test "Dump workload with --stream" {
-    echo "PATH = $PATH"
-    echo "where is cedana-image-streamer: $(whereis cedana-image-streamer)"
-    echo "where is date: $(whereis date)"
-    echo "where is sleep: $(whereis sleep)"
-    echo "ls -l /usr/bin/cedana-image-streamer: $(ls -l /usr/bin/cedana-image-streamer)"
-    echo "ls -l /var/log = $(ls -l /var/log)"
-    local task="sh -x workload.sh"
+    local task="./workload.sh"
     local job_id="workload-stream-1"
 
     # execute and checkpoint with streaming
-    exec_task "sh -x workload.sh" $job_id
+    exec_task $task $job_id
     sleep 1 3>-
     checkpoint_task $job_id /tmp --stream 4
     [[ "$status" -eq 0 ]]
 }
 
 @test "Restore workload with --stream" {
-    local task="sh -x workload.sh"
+    local task="./workload.sh"
     local job_id="workload-stream-2"
 
     # execute, checkpoint and restore with streaming
-    exec_task "sh -x workload.sh" $job_id
+    exec_task $task $job_id
     sleep 1 3>-
     checkpoint_task $job_id /tmp --stream 4
     sleep 1 3>-

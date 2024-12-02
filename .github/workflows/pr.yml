@@ -25,7 +25,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build cedana-image-streamer
-        run: cargo build --release --bin cedana-image-streamer
+        run: cargo build -q --release --bin cedana-image-streamer
       - name: Upload cedana-image-streamer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -38,7 +38,7 @@ jobs:
           # Install dependencies
           sudo apt -qq update
           sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
-          wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+          wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           export PATH=$PATH:/usr/local/go/bin
           go version
@@ -100,7 +100,7 @@ jobs:
           # Install dependencies
           sudo apt -qq update
           sudo apt -qq install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
-          wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+          wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
           sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           export PATH=$PATH:/usr/local/go/bin
           go version
