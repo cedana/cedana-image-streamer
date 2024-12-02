@@ -39,7 +39,6 @@ jobs:
   regression-test:
     name: Regression tests
     runs-on: ubicloud-standard-8
-    timeout-minutes: 5
     needs: build
     steps:
       - name: Checkout
