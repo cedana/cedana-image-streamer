@@ -119,3 +119,15 @@ jobs:
         with:
           name: bats_logs
           path: ~/bats_out
+      - name: Upload cedana-daemon log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedana-daemon.log
+          path: /var/log/cedana-daemon.log
+      - name: Upload cedana-output log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedana-output.log
+          path: /var/log/cedana-output.log
