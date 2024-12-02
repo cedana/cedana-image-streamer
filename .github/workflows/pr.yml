@@ -63,29 +63,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Download cedana-image-streamer artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1
         with:
           name: cedana-image-streamer
       - name: Download cedana artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1
         with:
           name: cedana
       - name: Add cedana-image-streamer to $PATH
         run: |
           chmod +x cedana-image-streamer
           sudo cp cedana-image-streamer /usr/bin/
-          whereiscedanaimagestreamer=$(whereis cedana-image-streamer)
-          echo "installed cedana-image-streamer at $whereiscedanaimagestreamer"
-          echo "ls -l /usr/local/cedana-image-streamer = $(ls -l /usr/local/cedana-image-streamer)"
-          echo "PATH = $PATH"
+          echo "installed cedana-image-streamer at $(whereis cedana-image-streamer)"
       - name: Install dependencies
         run: |
           # Install bats
           git clone https://github.com/bats-core/bats-core.git
           pushd bats-core
           sudo -E ./install.sh /usr/local
-          whereisbats=$(whereis bats)
-          echo "installed bats at $whereisbats"
+          echo "installed bats at $(whereis bats)"
           popd && rm -rf bats-core
       - name: Download binaries
         env:
@@ -97,8 +93,7 @@ jobs:
           curl -1sLf -O https://dl.cloudsmith.io/$CLOUDSMITH_ENTITLEMENT_TOKEN_CRIU/cedana/criu/raw/versions/$TAG/criu
           chmod +x criu
           sudo cp criu /usr/local/sbin/
-          whereiscriu=$(whereis criu)
-          echo "installed criu at $whereiscriu"
+          echo "installed criu at $(whereis criu)"
           printf "> criu --version\n$(criu --version)"
       - name: Install cedana daemon
         run: |
@@ -106,18 +101,13 @@ jobs:
           sudo apt update
           sudo apt install libgpgme-dev libseccomp-dev libbtrfs-dev pkg-config
           wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
-          sudo tar -C /usr/local -xvzf go1.22.0.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
           export PATH=$PATH:/usr/local/go/bin
           go version
 
           # Install cedana daemon
-          #git clone https://github.com/cedana/cedana.git
-          #pushd cedana
-          #git checkout $BRANCH
-          #go build
           chmod +x cedana
           sudo cp cedana /usr/bin/
-          #popd
           export CEDANA_CLI_WAIT_FOR_READY=true
           #- name: Setup tmate session
           #  uses: mxschmitt/action-tmate@v3
