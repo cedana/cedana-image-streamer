@@ -95,6 +95,8 @@ jobs:
           sudo cp cedana /usr/bin/
           popd
           export CEDANA_CLI_WAIT_FOR_READY=true
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
       - name: Run regression tests
         env:
           CEDANA_URL: ${{ secrets.CEDANA_URL }}
