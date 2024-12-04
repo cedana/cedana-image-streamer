@@ -1,3 +1,7 @@
+//  Copyright 2024 Cedana.
+//
+//  Modifications licensed under the Apache License, Version 2.0.
+
 //  Copyright 2020 Two Sigma Investments, LP.
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +24,7 @@ use crate::{
 };
 use std::{
     fs,
+    io::ErrorKind,
     os::unix::fs::PermissionsExt,
     os::unix::io::{RawFd, AsRawFd},
     os::unix::net::{UnixStream, UnixListener},
@@ -35,17 +40,21 @@ pub struct EndpointListener {
 
 impl EndpointListener {
     pub fn bind(images_dir: &Path, socket_name: &str) -> Result<Self> {
+        let socket_path = images_dir.join(socket_name);
+        if let Err(e) = fs::remove_file(&socket_path) {
+            if e.kind() != ErrorKind::NotFound { // Ignore DNE error
+                eprintln!("Failed to remove file: {}", e); // Propagate other errors
+            }
+        }
         // 1) We unlink the socket path to avoid EADDRINUSE on bind() if it already exists.
         // 2) We ignore the unlink error because we are most likely getting a -ENOENT.
         //    It is safe to do so as correctness is not impacted by unlink() failing.
-        let socket_path = images_dir.join(socket_name);
-        let _ = fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("Failed to bind socket to {}", socket_path.display()))?;
 
         // Adjust permissions to allow cedana-gpu-controller to connect
         let mut permissions = fs::metadata(&socket_path)?.permissions();
-        permissions.set_mode(0o777);
+        permissions.set_mode(0o666);
         fs::set_permissions(&socket_path, permissions)?;
 
         Ok(Self { listener })

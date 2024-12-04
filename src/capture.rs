@@ -1,3 +1,7 @@
+//  Copyright 2024 Cedana.
+//
+//  Modifications licensed under the Apache License, Version 2.0.
+
 //  Copyright 2020 Two Sigma Investments, LP.
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,6 +32,7 @@ use crate::{
     image,
     image::marker,
     impl_ord_by,
+    prnt,
 };
 use anyhow::Result;
 
@@ -68,6 +73,9 @@ const GPU_PIPE_DESIRED_CAPACITY: i32 = 16*MB as i32;
 const CPU_SHARD_PIPE_DESIRED_CAPACITY: i32 = 2*MB as i32;
 const GPU_SHARD_PIPE_DESIRED_CAPACITY: i32 = 16*MB as i32;
 
+/// Storing more shards per pipe reduces stalling.
+const SHARDS_PER_PIPE: i32 = 8;
+
 /// An `ImageFile` represents a file coming from CRIU.
 /// The complete CRIU image is comprised of many of these files.
 struct ImageFile {
@@ -78,7 +86,7 @@ struct ImageFile {
 }
 
 impl ImageFile {
-    // typename 0 = criu, 1 = gpu
+    /// typename: false = criu, true = gpu
     pub fn new(filename: String, mut pipe: UnixPipe, typename: bool) -> Self {
         // Try setting the pipe capacity. Failing is okay, it's just for better performance.
         let _ = pipe.set_capacity(if typename { GPU_PIPE_DESIRED_CAPACITY } else { CPU_PIPE_DESIRED_CAPACITY });
@@ -112,6 +120,7 @@ impl Shard {
         Ok(())
     }
 
+    /// May silently fail to set capacity, use with caution
     pub fn set_shard_capacity(&mut self, capacity: i32) {
         let _ = self.pipe.set_capacity(capacity);
     }
@@ -190,7 +199,8 @@ impl<'a> ImageSerializer<'a> {
     /// better load-balancing.
     fn chunk_max_data_size(&self) -> i32 {
         // If the shard pipe capacity is small, it's sad, but we need to send at least a page
-        max(self.shard_pipe_capacity/8 - **CHUNK_MARKER_KERNEL_SIZE as i32, *PAGE_SIZE as i32)
+        max(self.shard_pipe_capacity/SHARDS_PER_PIPE - **CHUNK_MARKER_KERNEL_SIZE as i32,
+            *PAGE_SIZE as i32)
     }
 
     fn write_chunk(&mut self, chunk: Chunk) -> Result<()> {
@@ -281,7 +291,7 @@ impl<'a> ImageSerializer<'a> {
 /// The description of arguments can be found in main.rs
 pub fn capture(
     mut shard_pipes: Vec<UnixPipe>,
-    gpu_listener: EndpointListener,
+    gpu_listener: Option<EndpointListener>,
     criu_listener: EndpointListener,
     ced_listener: EndpointListener,
 ) -> Result<()>
@@ -291,11 +301,9 @@ pub fn capture(
 
     // The kernel may limit the number of allocated pages for pipes, we must do it before setting
     // the pipe size of external file pipes as shard pipes are more performance sensitive.
-    let shard_pipe_capacity = UnixPipe::increase_capacity(&mut shard_pipes, GPU_SHARD_PIPE_DESIRED_CAPACITY)?;
+    let initial_capacity = if gpu_listener.is_some() { GPU_SHARD_PIPE_DESIRED_CAPACITY } else { CPU_SHARD_PIPE_DESIRED_CAPACITY };
+    let shard_pipe_capacity = UnixPipe::increase_capacity(&mut shard_pipes, initial_capacity)?;
     let mut shards: Vec<Shard> = shard_pipes.into_iter().map(Shard::new).collect::<Result<_>>()?;
-
-    // We are ready to get to work. Accept cedana-gpu-controller's connection.
-    let gpu = gpu_listener.into_accept()?;
 
     // Setup the poller to monitor the server socket and image files' pipes
     enum PollType {
@@ -303,7 +311,7 @@ pub fn capture(
         ImageFile(ImageFile),
     }
     let mut poller = Poller::new()?;
-    poller.add(gpu.as_raw_fd(), PollType::Endpoint(gpu), EpollFlags::EPOLLIN)?;
+    const EPOLL_CAPACITY: usize = 8;
 
     // Used to compute transfer speed. But the real start is when we call
     // `notify_checkpoint_start_once()`
@@ -313,58 +321,67 @@ pub fn capture(
     // The image serializer reads data from the image files, and writes it in chunks into shards.
     let mut img_serializer = ImageSerializer::new(&mut shards, shard_pipe_capacity);
 
-    // Process all inputs (ext files, CRIU's connection, and CRIU's files) until they reach EOF.
-    // As CRIU requests to write files, we receive new unix pipes that are added to the poller.
-    // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
-    // connection is typically at most 2.
-    let epoll_capacity = 8;
-    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
+    // We are ready to get to work.
+    match gpu_listener {
+        Some(g) => {
+            // Accept cedana-gpu-controller's connection.
+            let gpu = g.into_accept()?;
+            prnt!("connected to gpu");
+            poller.add(gpu.as_raw_fd(), PollType::Endpoint(gpu), EpollFlags::EPOLLIN)?;
+
+            // Process all inputs (ext files, CRIU's connection, and CRIU's files) until they reach EOF.
+            // As CRIU requests to write files, we receive new unix pipes that are added to the poller.
+            // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
+            // connection is typically at most 2.
+            while let Some((poll_key, poll_obj)) = poller.poll(EPOLL_CAPACITY)? {
+                match poll_obj {
+                    PollType::Endpoint(gpu) => {
+                        match gpu.read_next_file_request()? {
+                            Some(filename) => {
+                                notify_checkpoint_start_once.call_once(|| {
+                                    start_time = Instant::now();
+                                });
+
+                                let pipe = gpu.recv_pipe()?;
+                                let img_file = ImageFile::new(filename, pipe, true);
+                                poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file),
+                                        EpollFlags::EPOLLIN)?;
+                            }
+                            None => {
+                                // We are done receiving file requests. We can close the socket.
+                                // However, other files may still be transferring data.
+                                poller.remove(poll_key)?;
+                            }
+                        }
+                    }
+                    PollType::ImageFile(img_file) => {
+                        if !img_serializer.drain_img_file(img_file)? {
+                            // EOF of the image file is reached. Note that the image file pipe file
+                            // descriptor is closed automatically as it is owned by the poller.
+                            poller.remove(poll_key)?;
+                        }
+                    }
+                }
+            }
+            let _ = img_serializer.resize(CPU_SHARD_PIPE_DESIRED_CAPACITY);
+        },
+        None => { prnt!("not using gpu"); },
+    }
+
+    let criu = criu_listener.into_accept()?;
+    prnt!("connected to criu");
+
+    poller.add(criu.as_raw_fd(), PollType::Endpoint(criu), EpollFlags::EPOLLIN)?;
+
+    while let Some((poll_key, poll_obj)) = poller.poll(EPOLL_CAPACITY)? {
         match poll_obj {
-            PollType::Endpoint(gpu) => {
-                match gpu.read_next_file_request()? {
+            PollType::Endpoint(criu) => {
+                match criu.read_next_file_request()? {
                     Some(filename) => {
                         notify_checkpoint_start_once.call_once(|| {
                             start_time = Instant::now();
                         });
 
-
-                        let pipe = gpu.recv_pipe()?;
-                        let img_file = ImageFile::new(filename, pipe, true);
-                        poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file),
-                                   EpollFlags::EPOLLIN)?;
-                    }
-                    None => {
-                        // We are done receiving file requests. We can close the socket.
-                        // However, other files may still be transferring data.
-                        poller.remove(poll_key)?;
-                    }
-                }
-            }
-            PollType::ImageFile(img_file) => {
-                if !img_serializer.drain_img_file(img_file)? {
-                    // EOF of the image file is reached. Note that the image file pipe file
-                    // descriptor is closed automatically as it is owned by the poller.
-                    poller.remove(poll_key)?;
-                }
-            }
-        }
-    }
-
-    let _ = img_serializer.resize(CPU_SHARD_PIPE_DESIRED_CAPACITY);
-    let criu = criu_listener.into_accept()?;
-
-    poller.add(criu.as_raw_fd(), PollType::Endpoint(criu), EpollFlags::EPOLLIN)?;
-
-    // Process all inputs (ext files, CRIU's connection, and CRIU's files) until they reach EOF.
-    // As CRIU requests to write files, we receive new unix pipes that are added to the poller.
-    // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
-    // connection is typically at most 2.
-    let epoll_capacity = 8;
-    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
-        match poll_obj {
-            PollType::Endpoint(criu) => {
-                match criu.read_next_file_request()? {
-                    Some(filename) => {
                         let pipe = criu.recv_pipe()?;
                         let img_file = ImageFile::new(filename, pipe, false);
                         poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file),
@@ -388,9 +405,10 @@ pub fn capture(
     }
 
     let ced = ced_listener.into_accept()?;
+    prnt!("connected to daemon");
     poller.add(ced.as_raw_fd(), PollType::Endpoint(ced), EpollFlags::EPOLLIN)?;
 
-    while let Some((poll_key, poll_obj)) = poller.poll(8)? {
+    while let Some((poll_key, poll_obj)) = poller.poll(EPOLL_CAPACITY)? {
         match poll_obj {
             PollType::Endpoint(ced) => {
                 match ced.read_next_file_request()? {
@@ -417,8 +435,5 @@ pub fn capture(
         }
     }
     img_serializer.write_image_eof()?;
-    for shard in shards {
-        drop(shard.pipe);
-    }
     Ok(())
 }

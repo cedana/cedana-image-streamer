@@ -1,3 +1,7 @@
+//  Copyright 2024 Cedana.
+//
+//  Modifications licensed under the Apache License, Version 2.0.
+
 //  Copyright 2020 Two Sigma Investments, LP.
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -306,22 +310,22 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
 /// `serve_img()` serves the in-memory image store to CRIU.
 fn serve_img(
     mem_store: &mut image_store::mem::Store,
-    ready_path: &Path,
     ced_listener: EndpointListener,
-    gpu_listener: EndpointListener,
+    gpu_listener: Option<EndpointListener>,
     criu_listener: EndpointListener,
 ) -> Result<()>
 {
     eprintln!("r");
-    prnt!("entered serve_img");
     let mut ced = ced_listener.into_accept()?;
 
+    prnt!("connected to cedana");
     let mut filenames_of_sent_files = HashSet::new();
     if let Some(filename) = ced.read_next_file_request()? {
         match mem_store.remove(&filename) {
             Some(memory_file) => {
+                prnt!("cedana filename: {}",&filename);
                 filenames_of_sent_files.insert(filename.clone());
-                // ced.send_file_reply(true)?; // true means that the file exists.
+                ced.send_file_reply(true)?; // true means that the file exists.
                 let mut pipe = ced.recv_pipe()?;
                 // Try setting the pipe capacity. Failing is okay.
                 let _ = pipe.set_capacity(CPU_PIPE_DESIRED_CAPACITY);
@@ -336,19 +340,54 @@ fn serve_img(
                 ensure!(!filenames_of_sent_files.contains(&filename),
                     "Cedana is requesting the image file `{}` multiple times. \
                     This is not allowed to keep the memory usage low", &filename);
-                // ced.send_file_reply(false)?;
+                ced.send_file_reply(false)?;
             }
         }
     }
     prnt!("finished listening to cedana");
 
+    match gpu_listener {
+        Some(g) => {
+            let mut gpu = g.into_accept()?;
+            prnt!("connected to gpu");
+            while let Some(filename_prefix) = gpu.read_next_file_request()? {
+                match mem_store.remove_by_prefix(&filename_prefix) {
+                    Some((filename, memory_file)) => {
+                        prnt!("gpu filename: {}",&filename);
+                        filenames_of_sent_files.insert(filename.to_string().clone());
+                        gpu.send_file_reply(true)?;
+                        let mut pipe = gpu.recv_pipe()?;
+                        // Try setting the pipe capacity. Failing is okay.
+                        let _ = pipe.set_capacity(GPU_PIPE_DESIRED_CAPACITY);
+                        memory_file.drain(&mut pipe)
+                            .with_context(|| format!("while serving file_prefix {}", &filename_prefix))?;
+                    }
+                    None => {
+                        // If we keep the image file in our process, CRIU will also
+                        // have a copy of the image file. This uses x2 the memory for an image
+                        // file. For large files like memory pages, we could very much go over
+                        // the machine memory capacity.
+                        ensure!(!filenames_of_sent_files.contains(&filename_prefix),
+                            "cedana-gpu-controller is requesting the image file prefix `{}` multiple times. \
+                            This is not allowed to keep the memory usage low", &filename_prefix);
+                        gpu.send_file_reply(false)?;
+                    }
+                }
+            }
+            prnt!("finished listening to gpu");
+        },
+        None => { prnt!("not using gpu"); },
+    }
+
     let mut criu = criu_listener.into_accept()?;
+    prnt!("connected to criu");
     // XXX Currently, CRIU reads image files sequentially. If it were to read files in an
     // interleaved fashion, we would have to use the Poller to avoid deadlocks.
 
-    while let Some(filename) = criu.read_next_file_request_breaking(ready_path)? {
+    while let Some(filename) = criu.read_next_file_request()? {
         match mem_store.remove(&filename) {
             Some(memory_file) => {
+                prnt!("criu filename: {}",&filename);
                 filenames_of_sent_files.insert(filename.clone());
                 criu.send_file_reply(true)?; // true means that the file exists.
                 let mut pipe = criu.recv_pipe()?;
@@ -368,41 +407,8 @@ fn serve_img(
                 criu.send_file_reply(false)?;
             }
         }
-        if ready_path.exists() {
-            prnt!("breaking bc ready path exists");
-            break;
-        }
     }
     prnt!("finished listening to criu");
-
-    let mut gpu = gpu_listener.into_accept()?;
-    prnt!("passed gpu_listener accept");
-    while let Some(filename_prefix) = gpu.read_next_file_request()? {
-        prnt!("entered gpu while");
-        match mem_store.remove_by_prefix(&filename_prefix) {
-            Some((filename, memory_file)) => {
-                prnt!("gpu file {:?}",filename);
-                filenames_of_sent_files.insert(filename.to_string().clone());
-                // gpu.send_file_reply(true)?;
-                let mut pipe = gpu.recv_pipe()?;
-                // Try setting the pipe capacity. Failing is okay.
-                let _ = pipe.set_capacity(GPU_PIPE_DESIRED_CAPACITY);
-                memory_file.drain(&mut pipe)
-                   .with_context(|| format!("while serving file_prefix {}", &filename_prefix))?;
-            }
-            None => {
-                // If we keep the image file in our process, CRIU will also
-                // have a copy of the image file. This uses x2 the memory for an image
-                // file. For large files like memory pages, we could very much go over
-                // the machine memory capacity.
-                ensure!(!filenames_of_sent_files.contains(&filename_prefix),
-                    "cedana-gpu-controller is requesting the image file prefix `{}` multiple times. \
-                    This is not allowed to keep the memory usage low", &filename_prefix);
-                // gpu.send_file_reply(false)?;
-            }
-        }
-    }
-    prnt!("finished listening to gpu");
 
     Ok(())
 }
@@ -424,18 +430,14 @@ fn drain_shards_into_img_store<Store: ImageStore>(
 /// Description of the arguments can be found in main.rs
 pub fn serve(
     shard_pipes: Vec<UnixPipe>,
-    ready_path: &Path,
     ced_listener: EndpointListener,
-    gpu_listener: EndpointListener,
+    gpu_listener: Option<EndpointListener>,
     criu_listener: EndpointListener,
 ) -> Result<()>
 {
     let mut mem_store = image_store::mem::Store::default();
     let _ = drain_shards_into_img_store(&mut mem_store, shard_pipes)?;
-    prnt!("finished with drain_shards_into.."); // it seems that this happens after serve_img has started?
-    // eprintln!("r");
-    serve_img(&mut mem_store, ready_path, ced_listener, gpu_listener, criu_listener)?;
-    prnt!("finished with serve_img");
+    serve_img(&mut mem_store, ced_listener, gpu_listener, criu_listener)?;
 
     Ok(())
 }
@@ -445,8 +447,6 @@ pub fn extract(images_dir: &Path,
     shard_pipes: Vec<UnixPipe>,
 ) -> Result<()>
 {
-    create_dir_all(images_dir)?;
-
     // extract on disk
     let mut file_store = image_store::fs::Store::new(images_dir);
     let _ = drain_shards_into_img_store(&mut file_store, shard_pipes)?;
