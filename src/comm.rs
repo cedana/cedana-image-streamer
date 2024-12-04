@@ -195,7 +195,6 @@ fn spawn_capture_handles_remote(
     r_fds: Vec<RawFd>,
     use_gpu: bool,
 ) -> Vec<thread::JoinHandle<()>> {
-    prnt!("entered spawn_capture_handles_remote");
     (0..num_pipes)
         .map(|i| {
             let bucket_name = bucket.clone();
@@ -278,7 +277,6 @@ fn spawn_serve_handles_local(
     w_fds: Vec<RawFd>,
     input_prefix: &str,
 ) -> Vec<thread::JoinHandle<()>> {
-    prnt!("entered spawn_serve_handles_local");
     (0..num_pipes)
         .map(|i| {
             let w_fd = w_fds[i].clone();
@@ -327,14 +325,11 @@ fn spawn_serve_handles_remote(
     w_fds: Vec<RawFd>,
     input_prefix: &str,
 ) -> Vec<thread::JoinHandle<()>> {
-    prnt!("entered spawn_serve_handles_remote");
     (0..num_pipes)
         .map(|i| {
-            prnt!("entered i = {}",i.clone());
             let bucket_name = bucket.clone();
             let w_fd = w_fds[i].clone();
             let key = format!("{}{}.lz4", &input_prefix, i);
-            prnt!("starting to spawn serve handle for {}", &key);
             let client = create_s3_client();
             let (tx, rx) = mpsc::channel();
             let handle = thread::spawn(move || {
