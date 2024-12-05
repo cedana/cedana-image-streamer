@@ -62,13 +62,13 @@ use anyhow::{Result, Context};
 /// If we were doing shard to CRIU splices, we could bump the capacity to 4MB.
 #[allow(clippy::identity_op)]
 const CPU_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
-const GPU_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
+const GPU_PIPE_DESIRED_CAPACITY: i32 = 16*MB as i32;
 
 
 /// Data comes in a stream of chunks, which can be as large as 2MB (from capture.rs).
 /// We use 8MB to have four chunks in to avoid stalling the shards.
 /// CPU cache interference experimentally seems minimal, larger sizes help performance.
-const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
+const SHARD_PIPE_DESIRED_CAPACITY: i32 = 8*MB as i32;
 
 struct Shard {
     pipe: UnixPipe,
