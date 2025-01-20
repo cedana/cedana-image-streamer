@@ -20,7 +20,8 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
     - name: Build cedana-image-streamer
       run: |
-        cargo build --release --bin cedana-image-streamer
+        make build
+        echo $(target/release/cedana-image-streamer --version)
     - name: Persist cedana-image-streamer
       id: persist-cedana-image-streamer
       uses: actions/upload-artifact@v4

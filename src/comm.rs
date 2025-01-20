@@ -5,7 +5,7 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 use crossbeam_utils::Backoff;
-use image_streamer::{
+use cedana_image_streamer::{
     capture::capture,
     extract::{extract, serve},
     unix_pipe::UnixPipe,
