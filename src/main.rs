@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-//! Executable entry point. Imports lib.rs via the criu_image_streamer crate.
+//! Executable entry point. Imports lib.rs via the cedana_image_streamer crate.
 
 // Unless we are in release mode, allow dead code, unused imports and variables,
 // it makes development more enjoyable.
@@ -27,7 +27,7 @@ use std::{
     fs,
 };
 use structopt::{StructOpt, clap::AppSettings};
-use criu_image_streamer::{
+use cedana_image_streamer::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
     capture::capture,
     extract::{serve, extract},
@@ -158,7 +158,7 @@ fn do_main() -> Result<()> {
 
 fn main() {
     if let Err(e) = do_main() {
-        eprintln!("criu-image-streamer Error: {:#}", e);
+        eprintln!("cedana-image-streamer Error: {:#}", e);
     }
 }
 

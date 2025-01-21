@@ -1,5 +1,5 @@
 [package]
-name = "criu-image-streamer"
+name = "cedana-image-streamer"
 version = "1.0.0"
 authors = ["Nicolas Viennot <Nicolas.Viennot@twosigma.com>"]
 description = "Captures and extracts CRIU images via UNIX pipes"

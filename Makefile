@@ -13,7 +13,7 @@
 #       limitations under the License.
 
 
-all: criu-image-streamer
+all: cedana-image-streamer
 
 PREFIX ?= $(DESTDIR)/usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -33,22 +33,22 @@ ifeq (,$(wildcard $(CARGO)))
 	CARGO=cargo
 endif
 
-target/$(BUILD)/criu-image-streamer: $(DEPS)
+target/$(BUILD)/cedana-image-streamer: $(DEPS)
 	$(CARGO) build $(BUILD_FLAGS)
 
-criu-image-streamer: target/$(BUILD)/criu-image-streamer
+cedana-image-streamer: target/$(BUILD)/cedana-image-streamer
 	cp -a $< $@
 
-install: target/$(BUILD)/criu-image-streamer
-	install -m0755 $< $(BINDIR)/criu-image-streamer
+install: target/$(BUILD)/cedana-image-streamer
+	install -m0755 $< $(BINDIR)/cedana-image-streamer
 
 uninstall:
-	$(RM) $(addprefix $(BINDIR)/,criu-image-streamer)
+	$(RM) $(addprefix $(BINDIR)/,cedana-image-streamer)
 
 test:
 	$(CARGO) test $(BUILD_FLAGS) -- --test-threads=1 --nocapture
 
 clean:
-	rm -rf target criu-image-streamer
+	rm -rf target cedana-image-streamer
 
 .PHONY: all clean install test uninstall

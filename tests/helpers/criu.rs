@@ -19,7 +19,7 @@ use std::{
     path::PathBuf,
 };
 use anyhow::{Result, Context};
-use criu_image_streamer::{
+use cedana_image_streamer::{
     criu,
     util::{pb_read, pb_write},
     unix_pipe::UnixPipe,

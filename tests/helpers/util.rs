@@ -22,7 +22,7 @@ use nix::{
     sys::uio::IoVec,
     unistd,
 };
-use criu_image_streamer::{
+use cedana_image_streamer::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
     util::{KB, PAGE_SIZE},
 };

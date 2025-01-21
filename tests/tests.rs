@@ -27,7 +27,7 @@ use std::{
     cmp::{min, max},
     thread,
 };
-use criu_image_streamer::{
+use cedana_image_streamer::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
     capture::capture,
     extract::{extract, serve},
