@@ -13,7 +13,7 @@
 //  limitations under the License.
 
 use std::{
-    collections::{BinaryHeap},
+    collections::BinaryHeap,
     os::unix::io::AsRawFd,
     time::Instant,
     cmp::{min, max},
@@ -283,16 +283,14 @@ pub fn capture(
     let shard_pipe_capacity = UnixPipe::increase_capacity(&mut shard_pipes, SHARD_PIPE_DESIRED_CAPACITY)?;
     let mut shards: Vec<Shard> = shard_pipes.into_iter().map(Shard::new).collect::<Result<_>>()?;
 
-    // We are ready to get to work. Accept CRIU's connection.
-    let criu = listener.into_accept()?;
-
     // Setup the poller to monitor the server socket and image files' pipes
     enum PollType {
+        Listener(CriuListener),
         Criu(CriuConnection),
         ImageFile(ImageFile),
     }
     let mut poller = Poller::new()?;
-    poller.add(criu.as_raw_fd(), PollType::Criu(criu), EpollFlags::EPOLLIN)?;
+    let listener_key = poller.add(listener.as_raw_fd(), PollType::Listener(listener), EpollFlags::EPOLLIN)?;
 
     for (filename, pipe) in ext_file_pipes {
         let img_file = ImageFile::new(filename, pipe);
@@ -314,8 +312,17 @@ pub fn capture(
     let epoll_capacity = 8;
     while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
         match poll_obj {
+            PollType::Listener(listener) => { // New connection waiting, accept it
+                let conn = listener.accept()?;
+                poller.add(conn.as_raw_fd(), PollType::Criu(conn), EpollFlags::EPOLLIN)?;
+            }
             PollType::Criu(criu) => {
                 match criu.read_next_file_request()? {
+                    Some(ref filename) if filename == "stop-listener" => {
+                        // Stop accepting any new connections. Pending files will still be
+                        // processed.
+                        poller.remove(listener_key)?;
+                    }
                     Some(filename) => {
                         if filename != "cpuinfo.img" {
                             // Once the checkpoint has started, we must notify the controller.

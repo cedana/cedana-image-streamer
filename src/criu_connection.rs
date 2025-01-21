@@ -61,6 +61,17 @@ impl CriuListener {
         let (socket, _) = self.listener.accept()?;
         Ok(CriuConnection { socket })
     }
+
+    // if accepting multiple connections
+    pub fn accept(&self) -> Result<CriuConnection> {
+        // Accept a new connection without consuming the listener
+        let (socket, _) = self.listener.accept()?;
+        Ok(CriuConnection { socket })
+    }
+
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.listener.as_raw_fd()
+    }
 }
 
 pub struct CriuConnection {
