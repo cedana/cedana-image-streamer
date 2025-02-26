@@ -52,8 +52,8 @@ jobs:
 #       - uses: actions/checkout@v2
 #       - run: make test
 
-  regression-test:
-    name: Regression Tests
+  daemon-tests:
+    name: Daemon
     uses: cedana/cedana/.github/workflows/pr.yml@feature/ced-1011-reuse-regression-tests-in-cedana-gpu
     needs: build
     permissions:
