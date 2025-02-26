@@ -57,7 +57,7 @@ jobs:
 
   daemon-tests:
     name: Daemon
-    uses: cedana/cedana/.github/workflows/pr.yml
+    uses: cedana/cedana/.github/workflows/pr.yml@main
     needs: build
     permissions:
       contents: "read"
