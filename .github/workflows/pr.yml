@@ -23,3 +23,23 @@ jobs:
 #     steps:
 #       - uses: actions/checkout@v2
 #       - run: make test
+
+  regression-test:
+    name: Regression Tests
+    uses: cedana/cedana/.github/workflows/pr.yml@feature/ced-1011-reuse-regression-tests-in-cedana-gpu
+    needs: build
+    permissions:
+      contents: "read"
+      packages: "read"
+      id-token: "write"
+      pull-requests: "write"
+    with:
+      ref: feature/ced-1011-reuse-regression-tests-in-cedana-gpu
+      debug_build: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_regression_test }}
+      skip_bench: true
+      skip_shellcheck: true
+      skip_helper_image_push: true
+      skip_cpu_tests: true
+      skip_streamer_tests: false
+      skip_gpu_tests: true
+    secrets: inherit
