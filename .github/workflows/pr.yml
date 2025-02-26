@@ -7,6 +7,29 @@ on:
       - master
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt -y install protobuf-compiler
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build cedana-image-streamer
+        run: |
+          make
+
+      - name: Persist cedana-image-streamer
+        id: persist-cedana-image-streamer
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamer
+          path: target/release/cedana-image-streamer
+
   clippy_check:
     runs-on: ubuntu-latest
     steps:
