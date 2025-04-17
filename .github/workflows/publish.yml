@@ -91,7 +91,7 @@ jobs:
     name: Post Summary
     runs-on: ubuntu-latest
     if: inputs.post_summary
-    needs: cloudsmith
+    needs: [github, cloudsmith]
     permissions:
       contents: read
       pull-requests: write
