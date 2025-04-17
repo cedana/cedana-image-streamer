@@ -23,7 +23,7 @@ on:
         default: false
 
 concurrency:
-  group: cedana-image-streamer-${{ github.ref }}
+  group: cedana-image-streamer-push-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

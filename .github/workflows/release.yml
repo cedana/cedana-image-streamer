@@ -22,6 +22,10 @@ on:
         required: false
         default: false
 
+concurrency:
+  group: cedana-image-streamer-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build
