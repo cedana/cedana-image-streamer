@@ -45,14 +45,12 @@ jobs:
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test.yml@feature/ced-1034-run-all-benchmarks-on-all-repos-involved
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@feature/ced-1034-run-all-benchmarks-on-all-repos-involved
     needs: [build, download]
     secrets: inherit
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
-      streamer: true
       gpu: true
-      cpu: false
 
   publish:
     name: Publish
