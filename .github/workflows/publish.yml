@@ -33,7 +33,7 @@ jobs:
   github:
     name: GitHub
     if: inputs.github
-    runs-on: runs-on=${{github.run_id}}/runner=1cpu-4g-${{ matrix.arch }}/extras=s3-cache
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +80,7 @@ jobs:
   cloudsmith:
     name: Cloudsmith
     if: inputs.cloudsmith
-    runs-on: runs-on=${{github.run_id}}/runner=1cpu-4g-${{ matrix.arch }}/extras=s3-cache
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -150,10 +150,11 @@ jobs:
           API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
           ARCH: amd64
+          REPO: ${{ inputs.cloudsmith_repo }}
         run: |
           mkdir current
           cd current
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/cedana-image-streamer/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer
 
       - name: Download previous binary
         id: download-previous
@@ -161,10 +162,11 @@ jobs:
           API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
           TAG: ${{ steps.previous-tag.outputs.tag }}
           ARCH: amd64
+          REPO: ${{ inputs.cloudsmith_repo }}
         run: |
           mkdir previous
           cd previous
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/cedana-image-streamer/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer || true
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer || true
 
       - name: Generate summary
         id: summary
