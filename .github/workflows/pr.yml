@@ -50,6 +50,7 @@ jobs:
     needs: [build, download]
     secrets: inherit
     with:
+      ref: feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
       gpu: true
 
