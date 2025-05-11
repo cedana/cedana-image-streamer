@@ -41,6 +41,7 @@ jobs:
     secrets: inherit
     with:
       cedana_version: feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
+      criu_version: release
       gpu_version: ci/add-arm64-builds
 
   test:
