@@ -37,20 +37,20 @@ jobs:
 
   download:
     name: Download
-    uses: cedana/cedana/.github/workflows/download.yml@feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
+    uses: cedana/cedana/.github/workflows/download.yml@main
     secrets: inherit
     with:
-      cedana_version: feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
+      cedana_version: main
       criu_version: release
-      gpu_version: ci/add-arm64-builds
+      gpu_version: main
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
     needs: [build, download]
     secrets: inherit
     with:
-      ref: feature/ced-1095-nightly-test-and-benchmark-runs-for-larger-testmetrics
+      ref: main
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
       gpu: true
 
