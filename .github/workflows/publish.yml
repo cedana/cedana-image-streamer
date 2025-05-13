@@ -34,44 +34,69 @@ jobs:
     name: GitHub
     if: inputs.github
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+      max-parallel: 1 # DO NOT CHANGE: required to run in order
     steps:
       - name: Download binaries
         uses: actions/download-artifact@v4
         id: download-binaries
         with:
-          name: streamer
+          name: streamer-amd64
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Setup debugging session
+        uses: mxschmitt/action-tmate@v3
+        if: inputs.debug
         with:
-          tag_name: ${{ github.head_ref || github.ref_name }}
-          release_name: ${{ github.head_ref || github.ref_name }}
-          draft: false
-          prerelease: false
+          limit-access-to-actor: true
+
+      - name: Create tarballs
+        run: |
+          tar -czf cedana-image-streamer-${{ matrix.arch }}.tar.gz cedana-image-streamer
+
+      - name: Create release
+        if: matrix.arch == 'amd64'
+        id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.head_ref || github.ref_name }}
+        run: |
+          gh release create "$tag" \
+              --repo="$GITHUB_REPOSITORY" \
+              --title="${tag#v}" \
+              --generate-notes
 
-      - name: Upload executable
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./cedana-image-streamer
-          asset_name: cedana-image-streamer
-          asset_content_type: application/octet-stream
+      - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.head_ref || github.ref_name }}
+        run: |
+          gh release upload --clobber "$tag" \
+              --repo="$GITHUB_REPOSITORY" \
+              *.tar.gz \
 
   cloudsmith:
     name: Cloudsmith
     if: inputs.cloudsmith
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+      max-parallel: 1 # to avoid unknown cloudsmith failures
     steps:
+      - uses: runs-on/action@v1
       - name: Download binaries
         uses: actions/download-artifact@v4
         id: download-binaries
         with:
-          name: streamer
+          name: streamer-${{ matrix.arch }}
 
       - name: Push streamer
         id: push-streamer
@@ -83,9 +108,10 @@ jobs:
           owner: "cedana"
           repo: ${{ inputs.cloudsmith_repo }}
           file: "cedana-image-streamer"
-          name: "cedana-image-streamer"
+          name: "cedana-image-streamer-${{ matrix.arch }}"
           version: ${{ github.head_ref || github.ref_name }}
           republish: "true"
+          tags: ${{ matrix.arch }}, ${{ github.head_ref || github.ref_name }}, ${{ github.sha }}
 
   post-summary:
     name: Post Summary
@@ -126,20 +152,24 @@ jobs:
         env:
           API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
+          ARCH: amd64
+          REPO: ${{ inputs.cloudsmith_repo }}
         run: |
           mkdir current
           cd current
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/cedana-image-streamer/raw/versions/$TAG/cedana-image-streamer
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer
 
       - name: Download previous binary
         id: download-previous
         env:
           API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
           TAG: ${{ steps.previous-tag.outputs.tag }}
+          ARCH: amd64
+          REPO: ${{ inputs.cloudsmith_repo }}
         run: |
           mkdir previous
           cd previous
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/cedana-image-streamer/raw/versions/$TAG/cedana-image-streamer
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer || true
 
       - name: Generate summary
         id: summary

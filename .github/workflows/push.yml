@@ -40,6 +40,7 @@ jobs:
     secrets: inherit
     with:
       cedana_version: main
+      criu_version: release
       gpu_version: main
 
   test:
@@ -48,6 +49,7 @@ jobs:
     needs: [build, download]
     secrets: inherit
     with:
+      ref: main
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
       gpu: true
 
