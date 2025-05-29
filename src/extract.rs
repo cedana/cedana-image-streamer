@@ -330,9 +330,10 @@ fn serve_img(
                         // processed.
                         poller.remove(listener_key)?;
                     }
-                    Some(ref filename) if filename == "*" => {
+                    // check if filename has a wildcard
+                    Some(ref pattern) if pattern.contains('*') => {
                         // List all files in the image store.
-                        client.send_file_list_reply(mem_store.list())?;
+                        client.send_file_list_reply(mem_store.list(pattern))?;
                     }
                     Some(filename) => {
                         match mem_store.remove(&filename) {

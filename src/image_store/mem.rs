@@ -54,8 +54,23 @@ impl Store {
         self.files.remove(filename)
     }
 
-    pub fn list(&self) -> Vec<String> {
-        self.files.keys().map(|k| k.to_string()).collect()
+    pub fn list(&self, pattern: &str) -> Vec<String> {
+        if pattern.is_empty() {
+            // If the pattern is empty, return all files
+            return self.files.keys().map(|filename| filename.to_string()).collect();
+        }
+        // do a regular expression match
+        let re = regex::Regex::new(pattern);
+        match re {
+            Ok(re) => self.files.keys()
+                .filter(|&filename| re.is_match(filename))
+                .map(|filename| filename.to_string())
+                .collect(),
+            Err(_) => {
+                // If the regex is invalid, return an empty list
+                vec![]
+            }
+        }
     }
 }
 
