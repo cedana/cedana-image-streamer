@@ -17,10 +17,10 @@
 //  limitations under the License.
 
 use std::{
-    fs, marker, os::unix::{io::{AsRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, os::unix::{io::{AsRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
-    criu, image::Marker, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
+    criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
 };
 use anyhow::{Result, Context};
 
