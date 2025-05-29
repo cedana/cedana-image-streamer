@@ -330,6 +330,10 @@ fn serve_img(
                         // processed.
                         poller.remove(listener_key)?;
                     }
+                    Some(ref filename) if filename == "*" => {
+                        // List all files in the image store.
+                        client.send_file_list_reply(mem_store.list())?;
+                    }
                     Some(filename) => {
                         match mem_store.remove(&filename) {
                             Some(memory_file) => {

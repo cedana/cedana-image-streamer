@@ -53,6 +53,10 @@ impl Store {
     pub fn remove(&mut self, filename: &str) -> Option<File> {
         self.files.remove(filename)
     }
+
+    pub fn list(&self) -> Vec<String> {
+        self.files.keys().map(|k| k.to_string()).collect()
+    }
 }
 
 impl ImageStore for Store {

@@ -17,15 +17,10 @@
 //  limitations under the License.
 
 use std::{
-    os::unix::net::{UnixStream, UnixListener},
-    os::unix::io::{RawFd, AsRawFd},
-    path::Path,
-    fs,
+    fs, marker, os::unix::{io::{AsRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
-    criu,
-    util::{pb_write, recv_fd, pb_read_next},
-    unix_pipe::{UnixPipe, UnixPipeImpl},
+    criu, image::Marker, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
 };
 use anyhow::{Result, Context};
 
@@ -99,6 +94,11 @@ impl Connection {
     /// It is done via `send_file_reply()`. Not used during checkpointing.
     pub fn send_file_reply(&mut self, exists: bool) -> Result<()> {
         pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry { exists })?;
+        Ok(())
+    }
+
+    pub fn send_file_list_reply(&mut self, files: Vec<String>) -> Result<()> {
+        pb_write(&mut self.socket, &criu::ImgStreamerListReplyEntry { filenames: files })?;
         Ok(())
     }
 
