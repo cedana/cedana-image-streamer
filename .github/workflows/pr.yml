@@ -1,5 +1,12 @@
 name: PR
 
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+  pull-requests: write
+  checks: write
+
 on:
   pull_request:
     types: [opened, synchronize]
@@ -53,6 +60,7 @@ jobs:
       ref: main
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
       gpu: true
+      post_summary: false
 
   publish:
     name: Publish
@@ -76,7 +84,6 @@ jobs:
           # The token is required to post clippy problems on the github result page.
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
-
 # TODO: Fix these tests, breaking due to 'stop-listener' addition
 #   test:
 #     name: Test
