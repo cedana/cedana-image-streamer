@@ -46,7 +46,6 @@ jobs:
   build:
     name: Build
     uses: ./.github/workflows/build.yml
-    needs: check
     secrets: inherit
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_build }}
@@ -54,7 +53,6 @@ jobs:
   download:
     name: Download
     uses: cedana/cedana/.github/workflows/download.yml@main
-    needs: check
     secrets: inherit
     with:
       cedana_version: main
