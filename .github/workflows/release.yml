@@ -46,7 +46,7 @@ jobs:
     secrets: inherit
     with:
       cedana_version: main
-      criu_version: release
+      criu_version: criu-dev
       gpu_version: main
 
   test:
