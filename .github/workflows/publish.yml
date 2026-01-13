@@ -100,18 +100,20 @@ jobs:
 
       - name: Push streamer
         id: push-streamer
-        uses: cloudsmith-io/action@master
+        uses: cloudsmith-io/cloudsmith-cli-action@v2
         with:
           api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
-          command: "push"
-          format: "raw"
-          owner: "cedana"
-          repo: ${{ inputs.cloudsmith_repo }}
-          file: "cedana-image-streamer"
-          name: "cedana-image-streamer-${{ matrix.arch }}"
-          version: ${{ github.head_ref || github.ref_name }}
-          republish: "true"
-          tags: ${{ matrix.arch }}, ${{ github.head_ref || github.ref_name }}, ${{ github.sha }}
+
+      - name: Push streamer (CLI)
+        run: |
+          cloudsmith push raw cedana/${{ inputs.cloudsmith_repo }} cedana-image-streamer \
+            --republish \
+            --name cedana-image-streamer-${{ matrix.arch }} \
+            --version ${{ github.head_ref || github.ref_name }} \
+            --tags ${{ matrix.arch }},${{ github.head_ref || github.ref_name }},${{ github.sha }} \
+            --sync-attempts 5 \
+            --error-retry-max 5 \
+            --error-retry-backoff 1.0
 
   post-summary:
     name: Post Summary
