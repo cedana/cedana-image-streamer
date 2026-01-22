@@ -67,7 +67,7 @@ jobs:
     with:
       ref: main
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
-      post_summary: false
+      post_summary: true
 
   publish:
     name: Publish
