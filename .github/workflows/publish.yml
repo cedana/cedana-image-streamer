@@ -103,11 +103,11 @@ jobs:
         with:
           api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
 
-      - name: Push streamer (CLI)
+      - name: Push streamer
         run: |
-          cloudsmith push raw cedana/${{ inputs.cloudsmith_repo }} cedana-image-streamer \
+          cloudsmith push raw cedana/${{ inputs.cloudsmith_repo }} cedana-image-streamer-${{ matrix.arch }} \
             --republish \
-            --name cedana-image-streamer-${{ matrix.arch }} \
+            --name cedana-image-streamer \
             --version ${{ github.head_ref || github.ref_name }} \
             --tags ${{ matrix.arch }},${{ github.head_ref || github.ref_name }},${{ github.sha }} \
             --sync-attempts 5 \
