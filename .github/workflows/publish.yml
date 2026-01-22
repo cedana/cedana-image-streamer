@@ -158,7 +158,7 @@ jobs:
         run: |
           mkdir current
           cd current
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer-$ARCH
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/versions/$TAG/cedana-image-streamer-$ARCH
 
       - name: Download previous binary
         id: download-previous
@@ -170,7 +170,7 @@ jobs:
         run: |
           mkdir previous
           cd previous
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/names/cedana-image-streamer-$ARCH/versions/$TAG/cedana-image-streamer-$ARCH || true
+          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/versions/$TAG/cedana-image-streamer-$ARCH || true
 
       - name: Generate summary
         id: summary
