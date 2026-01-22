@@ -105,6 +105,7 @@ jobs:
 
       - name: Push streamer
         run: |
+          mv cedana-image-streamer cedana-image-streamer-${{ matrix.arch }}
           cloudsmith push raw cedana/${{ inputs.cloudsmith_repo }} cedana-image-streamer-${{ matrix.arch }} \
             --republish \
             --name cedana-image-streamer \
