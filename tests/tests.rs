@@ -31,6 +31,7 @@ use std::{
     cmp::{min, max},
     thread,
 };
+use tempfile::TempDir;
 use cedana_image_streamer::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
     capture::capture,
@@ -209,13 +210,22 @@ trait TestImpl {
 mod basic {
     use super::*;
 
-    struct Test;
+    struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
+    }
 
     impl Test {
-        fn new() -> Self { Self }
+        fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            Self { _temp_dir: temp_dir, images_dir }
+        }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
             checkpoint.criu.write_img_file("file.img")?
                 .write_all("hello world".as_bytes())?;
@@ -239,13 +249,21 @@ mod basic {
 mod missing_files {
     use super::*;
 
-    struct Test;
+    struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
+    }
 
     impl Test {
-        fn new() -> Self { Self }
+        fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            Self { _temp_dir: temp_dir, images_dir }
+        }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
         fn has_checkpoint_started(&mut self) -> bool { false }
 
         fn recv_img_files(&mut self, restore: &mut RestoreContext) -> Result<()> {
@@ -268,6 +286,8 @@ mod ext_files {
     const TEST_DATA2: &str = "ext file2 data";
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         send_ext_pipe1: Option<UnixPipe>,
         send_ext_pipe2: Option<UnixPipe>,
 
@@ -277,7 +297,11 @@ mod ext_files {
 
     impl Test {
         fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
             Self {
+                _temp_dir: temp_dir,
+                images_dir,
                 send_ext_pipe1: None, send_ext_pipe2: None,
                 recv_ext_pipe1: None, recv_ext_pipe2: None,
             }
@@ -285,6 +309,7 @@ mod ext_files {
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
         fn has_checkpoint_started(&mut self) -> bool { false }
 
         fn capture_ext_files(&mut self) -> Vec<(String, UnixPipe)> {
@@ -349,6 +374,8 @@ mod load_balancing {
     const CHOKE_SHARD_INDEX: usize = 0;
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         file: Vec<u8>,
         shard_threads: Option<Vec<thread::JoinHandle<Result<()>>>>,
         skip_test: bool,
@@ -356,7 +383,11 @@ mod load_balancing {
 
     impl Test {
         fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
             Self {
+                _temp_dir: temp_dir,
+                images_dir,
                 // Large enough to fill the buffer of the choked pipe
                 file: get_rand_vec(40*MB),
                 shard_threads: None,
@@ -366,6 +397,8 @@ mod load_balancing {
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
         fn shards(&mut self)-> Vec<(UnixPipe, UnixPipe)> {
             let (shards, shard_threads) = (0..4).map(|i| {
                 let (mut capture_shard_r, capture_shard_w) = new_pipe();
@@ -478,16 +511,22 @@ mod restore_mem_usage {
     const TOLERABLE_CRIU_RECEIVE_OVERHEAD: isize = 12*MB as isize;
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         start_mem_size: Option<usize>
     }
 
     impl Test {
         fn new() -> Self {
-            Self { start_mem_size: None }
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            Self { _temp_dir: temp_dir, images_dir, start_mem_size: None }
         }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
             self.start_mem_size = Some(get_resident_mem_size());
 
@@ -568,6 +607,8 @@ mod stress {
     const CHUNK_SIZE: usize = 10;
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         small_file: Vec<u8>,
         medium_file: Vec<u8>,
         large_file: Vec<u8>,
@@ -575,15 +616,19 @@ mod stress {
 
     impl Test {
         fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
             let small_file  = get_rand_vec(SMALL_FILE_SIZE);
             let medium_file = get_rand_vec(MEDIUM_FILE_SIZE);
             let large_file  = get_rand_vec(LARGE_FILE_SIZE);
 
-            Self { small_file, medium_file, large_file }
+            Self { _temp_dir: temp_dir, images_dir, small_file, medium_file, large_file }
         }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
             let checkpoint = Mutex::new(checkpoint);
 
@@ -676,17 +721,23 @@ mod splice_bug {
     const CHUNK_SIZE: usize = 10;
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         medium_file: Vec<u8>,
     }
 
     impl Test {
         fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
             let medium_file = get_rand_vec(MEDIUM_FILE_SIZE);
-            Self { medium_file }
+            Self { _temp_dir: temp_dir, images_dir, medium_file }
         }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
             let checkpoint = Mutex::new(checkpoint);
 
@@ -739,19 +790,24 @@ mod extract_to_disk {
     use std::fs::File;
 
     struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
         small_file: Vec<u8>,
         medium_file: Vec<u8>,
     }
 
     impl Test {
         fn new() -> Self {
-            let small_file = get_rand_vec(1*KB);
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            let small_file = get_rand_vec(KB);
             let medium_file = get_rand_vec(100*KB);
-            Self { small_file, medium_file }
+            Self { _temp_dir: temp_dir, images_dir, small_file, medium_file }
         }
     }
 
     impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
         fn serve_image(&mut self) -> bool { false }
 
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
