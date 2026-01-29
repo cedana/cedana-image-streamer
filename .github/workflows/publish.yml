@@ -97,22 +97,27 @@ jobs:
         with:
           name: streamer-${{ matrix.arch }}
 
-      - name: Install Cloudsmith CLI
-        uses: cloudsmith-io/cloudsmith-cli-action@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
       - name: Push streamer
         run: |
           mv cedana-image-streamer cedana-image-streamer-${{ matrix.arch }}
-          cloudsmith push raw cedana/${{ inputs.cloudsmith_repo }} cedana-image-streamer-${{ matrix.arch }} \
-            --republish \
-            --name cedana-image-streamer-${{ matrix.arch }} \
-            --version ${{ github.head_ref || github.ref_name }} \
-            --tags ${{ matrix.arch }},${{ github.head_ref || github.ref_name }},${{ github.sha }} \
-            --sync-attempts 5 \
-            --error-retry-max 5 \
-            --error-retry-backoff 1.0
+          REF="${{ github.head_ref || github.ref_name }}"
+          REF_SAFE="$(echo "$REF" | sed 's/\//-/g')"
+          SHA="${{ github.sha }}"
+
+          aws s3 cp \
+            cedana-image-streamer-${{ matrix.arch }} \
+            s3://cedana-bin/${{ inputs.aws_s3_path }}/${REF_SAFE}/cedana-image-streamer-${{ matrix.arch }} \
+            --metadata \
+              arch=${{ matrix.arch }},\
+              ref=${REF},\
+              sha=${SHA}
 
   post-summary:
     name: Post Summary
