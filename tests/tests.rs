@@ -62,7 +62,7 @@ struct StreamerRestoreContext {
 }
 
 struct RestoreContext {
-    streamer: StreamerRestoreContext,
+    _streamer: StreamerRestoreContext,
     criu: Criu,
 }
 
@@ -172,7 +172,7 @@ trait TestImpl {
         // The image can be served now. Wait for the CRIU socket to be ready.
         assert_eq!(read_line(&mut restore.progress)?, "socket-init");
         let criu = Criu::connect(self.images_dir().join("streamer-serve.sock"))?;
-        Ok(RestoreContext { streamer: restore, criu })
+        Ok(RestoreContext { _streamer: restore, criu })
     }
 
     fn recv_img_files(&mut self, _restore: &mut RestoreContext) -> Result<()> {
