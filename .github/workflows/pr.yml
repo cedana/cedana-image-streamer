@@ -80,8 +80,8 @@ jobs:
       cloudsmith_repo: cedana-image-streamer-alpha
       post_summary: false
 
-  test:
-    name: Test
+  make_test:
+    name: Test (Make)
     runs-on: ubuntu-latest
     needs: build
     steps:
