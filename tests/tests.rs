@@ -59,7 +59,6 @@ struct CheckpointContext {
 
 struct StreamerRestoreContext {
     progress: BufReader<UnixPipe>,
-    extract_thread: thread::JoinHandle<()>,
 }
 
 struct RestoreContext {
@@ -101,7 +100,7 @@ trait TestImpl {
             })
         };
 
-        let extract_thread = {
+        {
             let images_dir = self.images_dir();
             let ext_files = self.extract_ext_files();
             let serve_image = self.serve_image();
@@ -124,7 +123,6 @@ trait TestImpl {
                 },
                 StreamerRestoreContext {
                     progress: extract_progress,
-                    extract_thread,
                 }
         ))
     }
@@ -183,7 +181,6 @@ trait TestImpl {
 
     fn finish_restore(&mut self, mut restore: RestoreContext) -> Result<()> {
         restore.criu.finish()?;
-        restore.streamer.extract_thread.join().unwrap();
         Ok(())
     }
 
