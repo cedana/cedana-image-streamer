@@ -40,7 +40,6 @@ use crate::{
 /// The large chunk size should not be too large (e.g., 100MB) as the chunk size directly
 /// increases our memory overhead while transferring data to CRIU: while CRIU is duplicates the
 /// chunk data into its memory space, the chunk remains allocated until we get to the next chunk.
-
 const MAX_LARGE_CHUNK_SIZE: usize = 10*MB;
 static MAX_SMALL_CHUNK_SIZE: &PAGE_SIZE = &PAGE_SIZE;
 
@@ -183,7 +182,7 @@ impl File {
         Ok(())
     }
 
-    pub fn reader(&self) -> FileReader {
+    pub fn reader(&self) -> FileReader<'_> {
         let chunks = match self {
             Small(chunk) => vec![&chunk[..]].into_iter().collect(),
             Large(chunks) => chunks.iter().map(|chunk| &chunk[..]).collect(),
