@@ -37,9 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     if: inputs.rust
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/clippy-check@v1
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          # The token is required to post clippy problems on the github result page.
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features
+          components: clippy
+      - name: Run clippy
+        run: cargo clippy --all-features -- -D warnings
