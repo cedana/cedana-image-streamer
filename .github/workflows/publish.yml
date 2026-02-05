@@ -80,7 +80,7 @@ jobs:
               *.tar.gz \
 
   aws_s3:
-    name: aws_s3
+    name: aws-s3-{{ matrix.arch }}
     if: inputs.aws_s3
     runs-on: ubuntu-latest
     strategy:
@@ -114,10 +114,7 @@ jobs:
           aws s3 cp \
             cedana-image-streamer-${{ matrix.arch }} \
             s3://cedana-bin/${{ inputs.aws_s3_path }}/${REF_SAFE}/cedana-image-streamer-${{ matrix.arch }} \
-            --metadata \
-              arch=${{ matrix.arch }},\
-              ref=${REF},\
-              sha=${SHA}
+            --metadata arch=${{ matrix.arch }},ref=${REF},sha=${SHA}
 
   post-summary:
     name: Post Summary
