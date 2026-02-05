@@ -123,7 +123,7 @@ jobs:
     name: Post Summary
     runs-on: ubuntu-latest
     if: inputs.post_summary
-    needs: [github, cloudsmith]
+    needs: [github, aws_s3]
     permissions:
       contents: read
       pull-requests: write
