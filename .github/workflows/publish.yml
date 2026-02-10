@@ -106,13 +106,12 @@ jobs:
 
       - name: Push streamer
         run: |
-          mv cedana-image-streamer cedana-image-streamer-${{ matrix.arch }}
           REF="${{ github.head_ref || github.ref_name }}"
           REF_SAFE="$(echo "$REF" | sed 's/\//-/g')"
           SHA="${{ github.sha }}"
 
           aws s3 cp \
-            cedana-image-streamer-${{ matrix.arch }} \
+            cedana-image-streamer \
             s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/${REF_SAFE}/cedana-image-streamer \
             --metadata arch=${{ matrix.arch }},ref=${REF},sha=${SHA}
 
@@ -120,7 +119,7 @@ jobs:
     name: Generate Plugin registry_map.json
     if: inputs.aws_s3
     runs-on: ubuntu-latest
-    needs: aws_s3_plugin
+    needs: aws_s3
     strategy:
       fail-fast: false
       matrix:
@@ -129,10 +128,11 @@ jobs:
           - arm64
 
     steps:
-      - name: Download all plugin artifacts
+      - name: Download binaries
         uses: actions/download-artifact@v4
+        id: download-binaries
         with:
-          pattern: plugin-${{ matrix.arch }}-*
+          name: streamer-${{ matrix.arch }}
           path: artifacts
 
       - name: Upload metadata.json to S3
@@ -155,12 +155,8 @@ jobs:
             '{ arch: $arch, plugins: {} }' \
             > registry_map.json
 
-          for file in \
-            artifacts/streamer-${{ matrix.arch }}/cedana-image-streamer \
-            do
-
+          find artifacts -type f | while read -r file; do
             fname="$(basename "$file")"
-
             plugin="${fname%.so}"
 
             checksum="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
