@@ -227,6 +227,7 @@ impl<'a> ImageSerializer<'a> {
             Some(current_filename) if current_filename == filename => {},
             _ => {
                 self.current_filename = Some(Rc::clone(filename));
+                eprintln!("WRITING FILENAME MARKER filename: {}, seq: {}", filename, self.seq);
                 let marker = self.gen_marker(marker::Body::Filename(filename.to_string()));
                 self.write_chunk(Chunk { marker, data: None })?;
             }
@@ -235,29 +236,45 @@ impl<'a> ImageSerializer<'a> {
         Ok(())
     }
 
-    /// Returns false if EOF of img_file is reached, true otherwise.
-    pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
-        let mut readable_len = img_file.pipe.fionread()?;
-
-        // This code is only invoked when the poller reports that the image file's pipe is readable
-        // (or errored), which is why we can detect EOF when fionread() returns 0.
-        let is_eof = readable_len == 0;
-
-        self.maybe_write_filename_marker(img_file)?;
-
-        while readable_len > 0 {
-            let data_size = min(readable_len, self.chunk_max_data_size());
-            let marker = self.gen_marker(marker::Body::FileData(data_size as u32));
-            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) })?;
-            readable_len -= data_size;
+    // polls on the fd continuously and ensures that it is compelety drained
+    pub fn drain_img_file(&mut self, file: &mut ImageFile) -> Result<()> {
+        enum PollType<'a> {
+            ImageFile(&'a mut ImageFile)
         }
+        let mut poller = Poller::new()?;
+        let image_key = poller.add(file.pipe.as_raw_fd(), PollType::ImageFile(file), EpollFlags::EPOLLIN)?;
+        let epoll_capacity = 16;
 
-        if is_eof {
-            let marker = self.gen_marker(marker::Body::FileEof(true));
-            self.write_chunk(Chunk { marker, data: None })?;
+        while let Some((_poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
+            match poll_obj {
+                PollType::ImageFile(img_file) => {
+                    self.maybe_write_filename_marker(img_file)?;
+
+                    let mut readable_len = img_file.pipe.fionread()?;
+                    let is_eof = readable_len == 0;
+
+                    while readable_len > 0 {
+                        let data_size = min(readable_len, self.chunk_max_data_size());
+                        let marker = self.gen_marker(marker::Body::FileData(data_size as u32));
+                        eprintln!("WRITING DATA MARKER filename: {}, seq: {}", self.current_filename.as_deref().unwrap().to_string(), self.seq);
+                        self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) })?;
+                        readable_len -= data_size;
+                    }
+
+                    // This code is only invoked when the poller reports that the image file's pipe is readable
+                    // (or errored), which is why we can detect EOF when fionread() returns 0.
+                    if is_eof {
+                        eprintln!("WRITING EOF filename: {}, seq: {}", self.current_filename.as_deref().unwrap().to_string(), self.seq);
+                        let marker = self.gen_marker(marker::Body::FileEof(true));
+                        self.write_chunk(Chunk { marker, data: None })?;
+                        // we got everything
+                        poller.remove(image_key)?;
+                    }
+
+                }
+            }
         }
-
-        Ok(!is_eof)
+        Ok(())
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
@@ -353,11 +370,8 @@ pub fn capture(
                 }
             }
             PollType::ImageFile(img_file) => {
-                if !img_serializer.drain_img_file(img_file)? {
-                    // EOF of the image file is reached. Note that the image file pipe file
-                    // descriptor is closed automatically as it is owned by the poller.
-                    poller.remove(poll_key)?;
-                }
+                img_serializer.drain_img_file(img_file)?;
+                poller.remove(poll_key)?;
             }
         }
     }
