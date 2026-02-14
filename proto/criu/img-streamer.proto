@@ -15,9 +15,16 @@ message img_streamer_request_entry {
 	required string filename = 1;
 }
 
+enum file_status {
+	DOES_NOT_EXIST = 0;
+	NOT_READY = 1;
+	READY = 2;
+}
+
 // This message is sent from the streamer to CRIU for listing all image files
 message img_streamer_reply_entry {
 	required bool exists = 1;
+	optional file_status status = 2;
 }
 
 message img_streamer_list_reply_entry {

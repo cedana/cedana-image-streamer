@@ -92,7 +92,16 @@ impl Connection {
     /// We must let client know if we hold has the requested file in question.
     /// It is done via `send_file_reply()`. Not used during checkpointing.
     pub fn send_file_reply(&mut self, exists: bool) -> Result<()> {
-        pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry { exists })?;
+        let status;
+        if !exists {
+            status = criu::FileStatus::DoesNotExist as i32;
+        } else {
+            status = criu::FileStatus::Ready as i32;
+        }
+        pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry {
+            exists: exists,
+            status: Some(status)
+        })?;
         Ok(())
     }
 
