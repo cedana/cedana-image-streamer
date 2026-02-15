@@ -17,14 +17,7 @@
 //  limitations under the License.
 
 use std::{
-    collections::{BinaryHeap},
-    os::unix::io::AsRawFd,
-    time::Instant,
-    cmp::{min, max},
-    path::Path,
-    sync::Once,
-    rc::Rc,
-    fs,
+    cmp::{max, min}, collections::{BinaryHeap, HashMap}, fs, io::Write, os::unix::io::AsRawFd, path::Path, rc::Rc, sync::Once, time::Instant
 };
 use crate::{
     poller::{Poller, EpollFlags},
@@ -136,6 +129,8 @@ struct ImageSerializer<'a> {
     shard_pipe_capacity: i32, // constant
     seq: u64,
     current_filename: Option<Rc<str>>,
+    current_file_size: u64,
+    metadata: HashMap<String, u64>
 }
 
 struct Chunk<'a> {
@@ -158,7 +153,26 @@ impl<'a> ImageSerializer<'a> {
             shards: shard_iter.collect(),
             current_filename: None,
             seq: 0,
+            current_file_size: 0,
+            metadata: HashMap::new()
         }
+    }
+
+    fn write_metadata_to_small_shard(&mut self) -> Result<()> {
+        let mut marker = self.gen_marker(marker::Body::Filename("metadata.json".to_string()), true);
+        self.write_chunk(Chunk { marker, data: None }, true)?;
+
+        // we have to directly write metadata instead of call write_chunk because it expects
+        // a image file or a pipe
+        let bytes = serde_json::to_vec(&self.metadata)?;
+        marker = self.gen_marker(marker::Body::FileData(bytes.len() as u32), true);
+        let marker_size = pb_write(&mut self.small_file_shard.pipe, &marker)?;
+        self.small_file_shard.pipe.write_all(&bytes)?;
+        self.small_file_shard.bytes_written += bytes.len() as u64 + marker_size as u64;
+
+        marker = self.gen_marker(marker::Body::FileEof(true), true);
+        self.write_chunk(Chunk { marker, data: None }, true)?;
+        Ok(())
     }
 
     fn refresh_all_shard_remaining_space(&mut self) -> Result<()> {
@@ -226,6 +240,7 @@ impl<'a> ImageSerializer<'a> {
                 }
 
                 shard.bytes_written += marker_size as u64 + data_size as u64;
+                self.current_file_size += marker_size as u64 + data_size as u64;
                 shard.remaining_space -= space_required;
                 // As the shard reference drops, the binary heap gets reordered. nice.
 
@@ -236,6 +251,7 @@ impl<'a> ImageSerializer<'a> {
                 if let Some((img_file, _)) = chunk.data {
                     img_file.pipe.splice_all(&mut self.small_file_shard.pipe, data_size as usize)?;
                 }
+                self.current_file_size += marker_size as u64 + data_size as u64;
                 self.small_file_shard.bytes_written += marker_size as u64 + data_size as u64;
                 self.small_file_shard.remaining_space -= space_required;
                 Ok(())
@@ -306,6 +322,9 @@ impl<'a> ImageSerializer<'a> {
                         let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
                         self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
                         // we got everything
+                        let old = self.metadata.insert(img_file.filename.as_ref().to_string(), self.current_file_size);
+                        assert!(old.is_none());
+                        self.current_file_size = 0;
                         poller.remove(image_key)?;
                     }
 
@@ -316,6 +335,8 @@ impl<'a> ImageSerializer<'a> {
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
+        eprintln!("WRITING METADATA: {:#?}", self.metadata);
+        self.write_metadata_to_small_shard()?;
         // write image eof to the main shards
         let marker = self.gen_marker(image::marker::Body::ImageEof(true), false);
         self.write_chunk(Chunk { marker, data: None }, false)

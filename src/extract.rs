@@ -17,11 +17,7 @@
 //  limitations under the License.
 
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet},
-    os::unix::io::AsFd,
-    time::Instant,
-    path::Path,
-    fs,
+    collections::{BinaryHeap, HashMap, HashSet}, fs, io::Read, os::unix::io::AsFd, path::Path, time::Instant
 };
 use crate::{
     connection::{Listener, Connection},
@@ -106,6 +102,7 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
     //    vec, and the cycle continues.
     small_file_shard: &'a mut Shard,
     small_file_seq: u64,
+    metadata: Option<HashMap<String, u64>>,
     shards: Vec<&'a mut Shard>,
     readable_shards: Vec<&'a mut Shard>,
     pending_markers: BinaryHeap<PendingMarker<'a>>,
@@ -136,6 +133,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         Self {
             small_file_shard: shard_iter.nth(0).unwrap(),
             small_file_seq: 0,
+            metadata: None,
             shards: shard_iter.collect(),
             readable_shards: Vec::with_capacity(num_shards - 1),
             pending_markers: BinaryHeap::with_capacity(num_shards - 1),
@@ -303,18 +301,35 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         assert!(marker.seq == self.small_file_seq);
         match marker.body {
             Some(Filename(filename)) => {
+                if &*filename == "metadata.json" {
+                    eprintln!("GOT METADATA FILENAME MARKER");
+                }
                 self.select_img_file(filename.into_boxed_str())?;
             }
             Some(FileData(size)) => {
-                let (_filename, img_file) = self.current_img_file.as_mut()
+                let (filename, img_file) = self.current_img_file.as_mut()
                     .ok_or_else(|| anyhow!("Unexpected FileData marker"))?;
-                img_file.write_all_from_pipe(&mut self.small_file_shard.pipe, size as usize)?;
+
+                if filename.as_ref() == "metadata.json" {
+                    // there is never going to be more than one chunk of FileData for metadata
+                    let mut metadata_bytes = Vec::with_capacity(size as usize);
+                    let pipe = &mut self.small_file_shard.pipe;
+                    pipe.take(size as u64).read_to_end(&mut metadata_bytes)?;
+                    self.metadata = Some(serde_json::from_slice(&mut metadata_bytes)?);
+
+                    eprintln!("GOT METADATA: {:#?}", self.metadata.as_ref().unwrap());
+                } else {
+                    img_file.write_all_from_pipe(&mut self.small_file_shard.pipe, size as usize)?;
+                }
                 self.small_file_shard.bytes_read += size as u64;
             }
             Some(FileEof(true)) => {
                 let (filename, img_file) = self.current_img_file.take()
                     .ok_or_else(|| anyhow!("Unexpected FileEof marker"))?;
-                self.img_store.insert(filename, img_file);
+
+                if filename.as_ref() != "metadata.json" {
+                    self.img_store.insert(filename, img_file);
+                }
             }
             _ => bail!("Malformed image marker"),
         }
