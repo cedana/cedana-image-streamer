@@ -104,6 +104,8 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
     //    Once a marker matches the sequence number that we need (stored in the `seq` field), it is
     //    processed with its associated shard. Once processed, the shard goes back in the shards
     //    vec, and the cycle continues.
+    small_file_shard: &'a mut Shard,
+    small_file_seq: u64,
     shards: Vec<&'a mut Shard>,
     readable_shards: Vec<&'a mut Shard>,
     pending_markers: BinaryHeap<PendingMarker<'a>>,
@@ -129,10 +131,14 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
 impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     pub fn new(img_store: &'a mut ImgStore, shards: &'a mut [Shard]) -> Self {
         let num_shards = shards.len();
+        assert!(num_shards >= 2);
+        let mut shard_iter = shards.iter_mut();
         Self {
-            shards: shards.iter_mut().collect(),
-            readable_shards: Vec::with_capacity(num_shards),
-            pending_markers: BinaryHeap::with_capacity(num_shards),
+            small_file_shard: shard_iter.nth(0).unwrap(),
+            small_file_seq: 0,
+            shards: shard_iter.collect(),
+            readable_shards: Vec::with_capacity(num_shards - 1),
+            pending_markers: BinaryHeap::with_capacity(num_shards - 1),
             seq: 0,
             img_store,
             img_files: HashMap::new(),
@@ -291,8 +297,49 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         Ok(self.readable_shards.pop())
     }
 
+    fn process_small_file_marker(&mut self, marker: image::Marker) -> Result<()> {
+        use marker::Body::*;
+
+        assert!(marker.seq == self.small_file_seq);
+        match marker.body {
+            Some(Filename(filename)) => {
+                self.select_img_file(filename.into_boxed_str())?;
+            }
+            Some(FileData(size)) => {
+                let (_filename, img_file) = self.current_img_file.as_mut()
+                    .ok_or_else(|| anyhow!("Unexpected FileData marker"))?;
+                img_file.write_all_from_pipe(&mut self.small_file_shard.pipe, size as usize)?;
+                self.small_file_shard.bytes_read += size as u64;
+            }
+            Some(FileEof(true)) => {
+                let (filename, img_file) = self.current_img_file.take()
+                    .ok_or_else(|| anyhow!("Unexpected FileEof marker"))?;
+                self.img_store.insert(filename, img_file);
+            }
+            _ => bail!("Malformed image marker"),
+        }
+        Ok(())
+    }
+
+    fn drain_small_file_shard(&mut self) -> Result<()> {
+        loop {
+            match pb_read_next(&mut self.small_file_shard.pipe)? {
+                None => {
+                    break;
+                }
+                Some((marker, marker_size)) => {
+                    self.small_file_shard.bytes_read += marker_size as u64;
+                    self.process_small_file_marker(marker)?;
+                    self.small_file_seq += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Returns successfully when the image has been fully deserialized. This is our main loop.
     pub fn drain_all(&mut self) -> Result<()> {
+        self.drain_small_file_shard()?;
         while let Some(shard) = self.get_next_readable_shard()? {
             self.drain_shard(shard)?;
         }
