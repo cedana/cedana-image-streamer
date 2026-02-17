@@ -190,6 +190,11 @@ jobs:
     runs-on: ubuntu-latest
     if: inputs.post_summary
     needs: [github, aws_s3]
+    strategy:
+      fail-fast: true
+      matrix:
+        arch:
+          - amd64
     permissions:
       contents: read
       pull-requests: write
@@ -217,31 +222,45 @@ jobs:
         with:
           token: ${{ github.token }}
           excludes: draft
-          repository: ${{ github.repository }}
+          repository: ${{ github.repository }}\
 
-      - name: Download binaries
-        id: download
-        env:
-          API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ARCH: amd64
-          REPO: ${{ inputs.cloudsmith_repo }}
+      - name: Download streamer from S3
+        with:
+          VERSION: ${{ steps.tag.outputs.tag }}
         run: |
-          mkdir current
-          cd current
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/versions/$TAG/cedana-image-streamer-$ARCH
+          set -euo pipefail
+          VERSION=$(echo $VERSION | sed 's/\//-/g')
+          if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+            aws_s3_path="cedana-image-streamer"
+          else
+            aws_s3_path="cedana-image-streamer-alpha"
+          fi
+          mkdir -p streamer
+          REF="${{ github.head_ref || github.ref_name }}"
+          REF_SAFE="${REF//\//-}"
 
-      - name: Download previous binary
-        id: download-previous
-        env:
-          API_KEY: ${{ secrets.CLOUDSMITH_ENTITLEMENT_TOKEN }}
-          TAG: ${{ steps.previous-tag.outputs.tag }}
-          ARCH: amd64
-          REPO: ${{ inputs.cloudsmith_repo }}
+          aws s3 cp \
+            s3://cedana-bin/${aws_s3_path}/${{ matrix.arch }}/${VERSION}/cedana-image-streamer \
+            streamer/cedana-image-streamer
+
+      - name: Download previous streamer from S3
+        with:
+          VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
-          mkdir previous
-          cd previous
-          curl -1sLf -O https://dl.cloudsmith.io/$API_KEY/cedana/$REPO/raw/versions/$TAG/cedana-image-streamer-$ARCH || true
+          set -euo pipefail
+          VERSION=$(echo $VERSION | sed 's/\//-/g')
+          if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+            aws_s3_path="cedana-image-streamer"
+          else
+            aws_s3_path="cedana-image-streamer-alpha"
+          fi
+          mkdir -p streamer
+          REF="${{ github.head_ref || github.ref_name }}"
+          REF_SAFE="${REF//\//-}"
+
+          aws s3 cp \
+            s3://cedana-bin/${aws_s3_path}/${{ matrix.arch }}/${VERSION}/cedana-image-streamer \
+            streamer/cedana-image-streamer
 
       - name: Generate summary
         id: summary
