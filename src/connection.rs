@@ -91,13 +91,18 @@ impl Connection {
     /// During restore, client requests image files that may or may not exist.
     /// We must let client know if we hold has the requested file in question.
     /// It is done via `send_file_reply()`. Not used during checkpointing.
-    pub fn send_file_reply(&mut self, exists: bool) -> Result<()> {
-        let status;
-        if !exists {
-            status = criu::FileStatus::DoesNotExist as i32;
-        } else {
-            status = criu::FileStatus::Ready as i32;
-        }
+    /// exists doesn't matter if file_status is set
+    pub fn send_file_reply(&mut self, exists: bool, file_status: Option<criu::FileStatus>) -> Result<()> {
+        let status = match file_status {
+            None => {
+                if !exists {
+                    criu::FileStatus::DoesNotExist as i32
+                } else {
+                    criu::FileStatus::Ready as i32
+                }
+            },
+            Some(s) => s as i32
+        };
         pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry {
             exists: exists,
             status: Some(status)

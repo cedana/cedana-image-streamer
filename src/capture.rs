@@ -286,7 +286,7 @@ impl<'a> ImageSerializer<'a> {
         enum PollType<'a> {
             ImageFile(&'a mut ImageFile)
         }
-        let is_small_file = self.is_small_file(&file.filename);
+        let is_small_file = crate::util::is_small_file(&file.filename);
         let mut poller = Poller::new()?;
         let image_key = poller.add(file.pipe.as_raw_fd(), PollType::ImageFile(file), EpollFlags::EPOLLIN)?;
         let epoll_capacity = 16;
@@ -340,37 +340,6 @@ impl<'a> ImageSerializer<'a> {
         // write image eof to the main shards
         let marker = self.gen_marker(image::marker::Body::ImageEof(true), false);
         self.write_chunk(Chunk { marker, data: None }, false)
-    }
-
-    fn is_small_file(&self, filename: &Rc<str>) -> bool {
-        let name = filename.to_string();
-
-        // cedana file
-        if name == "process_state.json" {
-            return true;
-        }
-
-        // gpu files
-        if !name.ends_with(".img") {
-            return false;
-        }
-
-        let pages_re = Regex::new(r"^pages-[0-9]+\.img$").unwrap();
-        if pages_re.is_match(&name) {
-            return false;
-        }
-
-        let pagemap_re = Regex::new(r"^pagemap-[0-9]+\.img$").unwrap();
-        if pagemap_re.is_match(&name) {
-            return false;
-        }
-
-        let ghost_file_re = Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap();
-        if ghost_file_re.is_match(&name) {
-            return false;
-        }
-
-        true
     }
 }
 
