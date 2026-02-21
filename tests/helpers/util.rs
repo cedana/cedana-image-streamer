@@ -48,8 +48,8 @@ pub fn read_line<R: Read>(progress: &mut BufReader<R>) -> Result<String> {
     let mut buf = String::new();
     progress.read_line(&mut buf)?;
 
-    ensure!(buf.len() > 0, "EOF reached");
-    ensure!(buf.chars().last() == Some('\n'), "no trailing \\n found");
+    ensure!(!buf.is_empty(), "EOF reached");
+    ensure!(buf.ends_with('\n'), "no trailing \\n found");
     buf.pop(); // Removes the trailing '\n'
 
     Ok(buf)
@@ -82,7 +82,13 @@ pub fn get_filled_vec(size: usize, value: u8) -> Vec<u8> {
 }
 
 pub fn get_resident_mem_size() -> usize {
-    *PAGE_SIZE * procinfo::pid::statm_self().unwrap().resident
+    // /proc/[pid]/statm format (all values in pages):
+    // "size resident shared text lib data dt"
+    // Example: "12345 6789 1234 567 0 890 0"
+    // We extract field index 1 (resident set size) and convert to bytes.
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let resident: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+    *PAGE_SIZE * resident
 }
 
 pub fn read_to_end_rate_limited(src: &mut UnixPipe, dst: &mut Vec<u8>,
