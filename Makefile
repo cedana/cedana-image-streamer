@@ -21,6 +21,7 @@ all: cedana-image-streamer
 
 PREFIX ?= $(DESTDIR)/usr/local
 BINDIR ?= $(PREFIX)/bin
+FILTER ?=
 
 BUILD ?= release
 
@@ -55,7 +56,7 @@ uninstall:
 	$(RM) $(addprefix $(BINDIR)/,cedana-image-streamer)
 
 test:
-	$(CARGO) test $(BUILD_FLAGS) -- --test-threads=1 --nocapture
+	$(CARGO) test $(BUILD_FLAGS) -- --test-threads=1 --nocapture $(FILTER)
 
 shellcheck:
 	shellcheck -o all tests/integration.bats tests/prepare-fedora-test-environment.sh proto/sync_criu_proto_files.sh

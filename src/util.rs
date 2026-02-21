@@ -47,7 +47,8 @@ pub fn read_bytes_next<S: Read>(src: &mut S, len: usize) -> Result<Option<BytesM
     let mut buf = Vec::with_capacity(len);
     src.take(len as u64).read_to_end(&mut buf).context("Failed to read protobuf")?;
     Ok(match buf.len() {
-        0 => None,
+        0 if len == 0 => Some(buf[..].into()), // Empty message is valid, not EOF
+        0 => None, // EOF: expected to read bytes but got none
         l if l == len => Some(buf[..].into()),
         _ => bail!(EOF_ERR_MSG),
     })
