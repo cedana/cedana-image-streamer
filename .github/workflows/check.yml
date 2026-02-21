@@ -3,11 +3,6 @@ name: Check
 on:
   workflow_call:
     inputs:
-      pr_title:
-        type: boolean
-        description: "Pull request title"
-        required: false
-        default: false
       rust:
         type: boolean
         description: "Run Rust checks"
@@ -18,20 +13,6 @@ permissions:
   contents: read
 
 jobs:
-  pr-title:
-    name: PR Title
-    if: inputs.pr_title
-    runs-on: ubuntu-latest
-    steps:
-      - name: Validate PR title
-        run: |
-          TITLE="${{ github.event.pull_request.title }}"
-          echo "PR Title: $TITLE"
-          if [[ ! "$TITLE" =~ ^CED-[0-9]+:\  ]]; then
-            echo "❌ PR title must start with 'CED-<number>: ' (note the colon and space)"
-            exit 1
-          fi
-
   rust:
     name: Rust
     runs-on: ubuntu-latest
