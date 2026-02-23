@@ -80,7 +80,7 @@ jobs:
               *.tar.gz \
 
   aws_s3:
-    name: aws-s3-{{ matrix.arch }}
+    name: aws-s3-${{ matrix.arch }}
     if: inputs.aws_s3
     runs-on: ubuntu-latest
     strategy:
