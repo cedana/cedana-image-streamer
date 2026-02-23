@@ -85,4 +85,15 @@ impl Criu {
         self.read_img_file(filename)?.read_to_end(&mut buf)?;
         Ok(buf)
     }
+
+    pub fn list_img_files(&mut self, pattern: &str) -> Result<Vec<String>> {
+        let pattern = pattern.to_string();
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: pattern })?;
+
+        let mut files = Vec::new();
+        let reply: criu::ImgStreamerListReplyEntry = pb_read(&mut self.socket)?;
+
+        files.extend(reply.filenames);
+        Ok(files)
+    }
 }

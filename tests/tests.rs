@@ -246,6 +246,65 @@ mod basic {
     }
 }
 
+mod list_files {
+    use super::*;
+
+    struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
+    }
+
+    impl Test {
+        fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            Self { _temp_dir: temp_dir, images_dir }
+        }
+    }
+
+    impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+
+        fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
+            checkpoint.criu.write_img_file("file-1.img")?
+                .write_all("hello world".as_bytes())?;
+            checkpoint.criu.write_img_file("file-2.img")?
+                .write_all("hello world".as_bytes())?;
+            checkpoint.criu.write_img_file("other-file-1.img")?
+                .write_all("hello world".as_bytes())?;
+            checkpoint.criu.write_img_file("other-file-2.img")?
+                .write_all("hello world".as_bytes())?;
+
+            Ok(())
+        }
+
+        fn recv_img_files(&mut self, restore: &mut RestoreContext) -> Result<()> {
+            let buf = restore.criu.list_img_files("")?;
+            assert_eq!(buf.len(), 4, "Unexpected number of files listed");
+            let buf = restore.criu.list_img_files("*")?;
+            assert_eq!(buf.len(), 4, "Unexpected number of files listed");
+            let buf = restore.criu.list_img_files("file-*")?;
+            assert_eq!(buf.len(), 2, "Unexpected number of files listed");
+            assert!(buf.contains(&"file-1.img".to_string()), "file-1.img is missing in the list");
+            assert!(buf.contains(&"file-2.img".to_string()), "file-2.img is missing in the list");
+            let buf = restore.criu.list_img_files("file-*.img")?;
+            assert_eq!(buf.len(), 2, "Unexpected number of files listed");
+            assert!(buf.contains(&"file-1.img".to_string()), "file-1.img is missing in the list");
+            assert!(buf.contains(&"file-2.img".to_string()), "file-2.img is missing in the list");
+            let buf = restore.criu.list_img_files("other-file-*")?;
+            assert_eq!(buf.len(), 2, "Unexpected number of files listed");
+            assert!(buf.contains(&"other-file-1.img".to_string()), "other-file-1.img is missing in the list");
+            assert!(buf.contains(&"other-file-2.img".to_string()), "other-file-2.img is missing in the list");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test() -> Result<()> {
+        Test::new().run()
+    }
+}
+
 mod missing_files {
     use super::*;
 
