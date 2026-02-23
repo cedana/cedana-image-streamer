@@ -49,7 +49,8 @@ impl Criu {
 
     pub fn finish(&mut self) -> Result<()> {
         pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: "stop-listener".to_string() })?;
-        // drops the connection
+        // explicitly shutdown the connection
+        self.socket.shutdown(std::net::Shutdown::Both)?;
         Ok(())
     }
 

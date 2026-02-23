@@ -14,12 +14,11 @@
 
 use std::{
     os::unix::net::UnixStream,
-    io::{Read, BufReader, BufRead},
-    os::unix::io::{RawFd, AsRawFd},
+    io::{Read, BufReader, BufRead, IoSlice},
+    os::unix::io::{RawFd, AsRawFd, IntoRawFd},
 };
 use nix::{
     sys::socket::{ControlMessage, MsgFlags, sendmsg},
-    sys::uio::IoVec,
     unistd,
 };
 use cedana_image_streamer::{
@@ -36,13 +35,12 @@ pub struct Stats {
 #[derive(Deserialize, Debug)]
 pub struct ShardStat {
     pub size: u64,
-    pub transfer_duration_millis: u128,
 }
 
 pub fn new_pipe() -> (UnixPipe, UnixPipe) {
     let (fd_r, fd_w) = unistd::pipe().expect("Failed to create UNIX pipe");
-    let pipe_r = UnixPipe::new(fd_r).unwrap();
-    let pipe_w = UnixPipe::new(fd_w).unwrap();
+    let pipe_r = UnixPipe::new(fd_r.into_raw_fd()).unwrap();
+    let pipe_w = UnixPipe::new(fd_w.into_raw_fd()).unwrap();
     (pipe_r, pipe_w)
 }
 
@@ -50,8 +48,8 @@ pub fn read_line<R: Read>(progress: &mut BufReader<R>) -> Result<String> {
     let mut buf = String::new();
     progress.read_line(&mut buf)?;
 
-    ensure!(buf.len() > 0, "EOF reached");
-    ensure!(buf.chars().last() == Some('\n'), "no trailing \\n found");
+    ensure!(!buf.is_empty(), "EOF reached");
+    ensure!(buf.ends_with('\n'), "no trailing \\n found");
     buf.pop(); // Removes the trailing '\n'
 
     Ok(buf)
@@ -62,8 +60,8 @@ pub fn read_stats<R: Read>(progress: &mut BufReader<R>) -> Result<Stats> {
 }
 
 pub fn send_fd(socket: &mut UnixStream, fd: RawFd) -> Result<()> {
-    sendmsg(socket.as_raw_fd(),
-           &[IoVec::from_slice(&[0])],
+    sendmsg::<()>(socket.as_raw_fd(),
+           &[IoSlice::new(&[0])],
            &[ControlMessage::ScmRights(&[fd])],
            MsgFlags::empty(),
            None)?;
@@ -84,7 +82,13 @@ pub fn get_filled_vec(size: usize, value: u8) -> Vec<u8> {
 }
 
 pub fn get_resident_mem_size() -> usize {
-    *PAGE_SIZE * procinfo::pid::statm_self().unwrap().resident
+    // /proc/[pid]/statm format (all values in pages):
+    // "size resident shared text lib data dt"
+    // Example: "12345 6789 1234 567 0 890 0"
+    // We extract field index 1 (resident set size) and convert to bytes.
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let resident: usize = statm.split_whitespace().nth(1).unwrap().parse().unwrap();
+    *PAGE_SIZE * resident
 }
 
 pub fn read_to_end_rate_limited(src: &mut UnixPipe, dst: &mut Vec<u8>,

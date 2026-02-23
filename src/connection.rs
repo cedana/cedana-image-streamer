@@ -29,7 +29,6 @@ const IMG_STREAMER_SERVE_SOCKET_NAME: &str = "streamer-serve.sock";
 
 /// The role of the `Listener` and `Connection` is to handle communication over
 /// the image socket.
-
 pub struct Listener {
     listener: UnixListener,
 }
