@@ -74,5 +74,5 @@ jobs:
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_publish }}
       github: true
-      cloudsmith: true
+      aws_s3:: true
       post_summary: true

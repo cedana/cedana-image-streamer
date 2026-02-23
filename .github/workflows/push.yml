@@ -71,6 +71,6 @@ jobs:
     secrets: inherit
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_publish }}
-      cloudsmith: true
-      cloudsmith_repo: cedana-image-streamer-alpha
+      aws_s3: true
+      aws_s3_path: cedana-image-streamer-alpha
       post_summary: false
