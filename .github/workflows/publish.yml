@@ -162,18 +162,18 @@ jobs:
             checksum="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
 
             jq \
-              --arg plugin "$plugin" \
+              --arg plugin "streamer" \
               --arg name "$fname" \
               --arg checksum "$checksum" \
               '
               .plugins[$plugin] |=
                 (
                   . // {
-                    type: "SUPPORTED",
-                    libraries: []
+                    type: "EXTERNAL",
+                    binaries: []
                   }
                 )
-              | .plugins[$plugin].libraries += [{
+              | .plugins[$plugin].binaries += [{
                   name: $name,
                   checksum: $checksum
                 }]
