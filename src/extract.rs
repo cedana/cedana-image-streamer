@@ -23,8 +23,7 @@ use std::{
     time::Instant,
     path::Path,
     fs,
-    io::{Read, Write},
-    os::{fd::{AsRawFd, RawFd}},
+    io::Read,
     sync::{Arc, mpsc::{self, Receiver, TryRecvError}},
     thread,
 };
@@ -35,15 +34,14 @@ use crate::{
     image,
     image::marker,
     impl_ord_by,
-    image_store::{self, ImageStore, ImageFile, fs_overlay, fs_parallel::{self, FileContent}},
+    image_store::{self, ImageStore, ImageFile, fs_parallel::{self, FileContent}},
     image_patcher::patch_img,
     poller::Poller,
     semaphore::{self, Semaphore},
     criu::FileStatus
 };
-use crate::mmap_buf::MmapBuf;
 use nix::{poll::{PollFd, PollFlags, PollTimeout, poll}, sys::{epoll::EpollFlags, sysinfo::sysinfo}};
-use anyhow::{Result, Context};
+use anyhow::Result;
 
 // The serialized image is received via multiple data streams (`Shard`). The data streams are
 // comprised of markers followed by an optional data payload. The format of the markers is

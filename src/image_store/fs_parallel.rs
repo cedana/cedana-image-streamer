@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::sync::Arc;
-use std::{collections::HashMap, fs, sync::mpsc::Sender};
+use std::sync::mpsc::Sender;
 use std::cmp::min;
 
 use crate::image_store::{ImageStore, ImageFile};
@@ -9,7 +9,6 @@ use crate::unix_pipe::UnixPipe;
 use crate::util;
 use crate::semaphore::Semaphore;
 use anyhow::{Result};
-use crate::image_store::mem::File as MemFile;
 
 pub struct FileSender {
     sender: Option<Sender<(String, FileContent)>>,
@@ -56,7 +55,7 @@ impl ImageStore for FileSender {
         }
     }
 
-    fn insert(&mut self, filename: impl Into<Box<str>>, output: Self::File) {
+    fn insert(&mut self, filename: impl Into<Box<str>>, _output: Self::File) {
         let filename = filename.into();
         if crate::util::is_small_file(&*filename) {
             assert!(self.small_file_sender.is_some());
@@ -102,7 +101,7 @@ impl ImageFile for File {
             chunk.resize(size);
             shard_pipe.read_exact(&mut chunk)?;
             to_send -= size;
-            let res = self.sender.send((self.filename.to_string(), FileContent::Content(chunk)));
+            let _ = self.sender.send((self.filename.to_string(), FileContent::Content(chunk)));
         }
         Ok(())
 
