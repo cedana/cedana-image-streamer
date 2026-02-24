@@ -23,7 +23,7 @@ use crate::{
     connection::{Connection, Listener}, criu::FileStatus, image::{self, marker}, image_patcher::patch_img, image_store::{self, ImageFile, ImageStore, fs_overlay, fs_parallel::{self, FileContent}}, impl_ord_by, poller::Poller, semaphore::{self, Semaphore}, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{self, *} 
 };
 use crate::mmap_buf::MmapBuf;
-use nix::{poll::{poll, PollFd, PollFlags, PollTimeout}, sys::epoll::EpollFlags};
+use nix::{poll::{PollFd, PollFlags, PollTimeout, poll}, sys::{epoll::EpollFlags, sysinfo::sysinfo}};
 use anyhow::{Result, Context};
 
 // The serialized image is received via multiple data streams (`Shard`). The data streams are
@@ -562,10 +562,18 @@ pub fn serve(images_dir: &Path,
     shard_pipes: Vec<UnixPipe>,
     ext_file_pipes: Vec<(String, UnixPipe)>,
     tcp_listen_remaps: Vec<(u16, u16)>,
+    memory_limit: Option<usize>
 ) -> Result<()>
 {
     create_dir_all(images_dir)?;
-    let semaphore = Arc::new(semaphore::Semaphore::new(400*MB as isize));
+    let limit = match memory_limit {
+        None => {
+            sysinfo()?.ram_total() as isize / MB as isize
+        },
+        Some(limit) => limit as isize
+    };
+    eprintln!("using memory limit: {}", limit);
+    let semaphore = Arc::new(semaphore::Semaphore::new(limit * MB as isize));
     let (sender, reciever) = mpsc::channel();
     let (small_file_sender, small_file_reciever) = mpsc::channel();
 

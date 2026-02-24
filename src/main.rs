@@ -73,6 +73,7 @@ fn parse_port_remap(s: &str) -> Result<(u16, u16)> {
     // subcommand version is not useful, disable it.
     global_setting(AppSettings::VersionlessSubcommands),
 )]
+
 struct Opts {
     /// Images directory where the client UNIX socket is created during streaming operations.
     // The short option -D mimics CRIU's short option for its --images-dir argument.
@@ -102,6 +103,11 @@ struct Opts {
     /// Multiple tcp port remaps may be passed as a comma separated list.
     #[structopt(long, parse(try_from_str=parse_port_remap), require_delimiter = true)]
     tcp_listen_remap: Vec<(u16, u16)>,
+
+    /// The amount of memory (in MB) streamer is allowed to use while serving image files during
+    /// restore. If not specified streamer will use as much memory as available.
+    #[structopt(short = "M", long)]
+    memory_limit: Option<usize>,
 
     #[structopt(subcommand)]
     operation: Operation,
@@ -139,15 +145,11 @@ fn do_main() -> Result<()> {
         unsafe { fs::File::from_raw_fd(progress_fd) }
     };
 
-    let shard_pipes =
-        if !opts.shard_fds.is_empty() {
-            opts.shard_fds
-        } else {
-            match opts.operation {
-                Capture => vec![dup_raw(libc::STDOUT_FILENO)?],
-                Extract | Serve => vec![dup_raw(libc::STDIN_FILENO)?],
-            }
-        }.into_iter()
+    ensure!(opts.shard_fds.len() >= 2,
+            "streamer requires atleast two shard fds");
+
+    let shard_pipes = opts.shard_fds
+            .into_iter()
             .map(UnixPipe::new)
             .collect::<Result<_>>()
             .context("Image shards (input/output) must be pipes. \
@@ -163,7 +165,7 @@ fn do_main() -> Result<()> {
     match opts.operation {
         Capture => capture(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
         Extract => extract(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
-        Serve   =>   serve(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes, opts.tcp_listen_remap),
+        Serve   =>   serve(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes, opts.tcp_listen_remap, opts.memory_limit),
     }
 }
 
