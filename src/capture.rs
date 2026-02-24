@@ -17,10 +17,24 @@
 //  limitations under the License.
 
 use std::{
-    cmp::{max, min}, collections::{BinaryHeap, HashMap}, fs, io::Write, os::unix::io::AsRawFd, path::Path, rc::Rc, sync::Once, time::Instant
+    collections::{BinaryHeap},
+    os::unix::io::AsRawFd,
+    io::Write,
+    time::Instant,
+    cmp::{min, max},
+    path::Path,
+    sync::Once,
+    rc::Rc,
+    fs
 };
 use crate::{
-    connection::{Connection, Listener}, image::{self, marker}, impl_ord_by, poller::{EpollFlags, Poller}, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{self, *}
+    poller::{Poller, EpollFlags},
+    connection::{Listener, Connection},
+    unix_pipe::{UnixPipe, UnixPipeImpl},
+    util::*,
+    image,
+    image::marker,
+    impl_ord_by,
 };
 use anyhow::Result;
 use regex::Regex;
@@ -281,7 +295,7 @@ impl<'a> ImageSerializer<'a> {
         // This code is only invoked when the poller reports that the image file's pipe is readable
         // (or errored), which is why we can detect EOF when fionread() returns 0.
         let is_eof = readable_len == 0;
-        let is_small_file = util::is_small_file(&img_file.filename);
+        let is_small_file = is_small_file(&img_file.filename);
 
         self.maybe_write_filename_marker(img_file, is_small_file)?;
 
