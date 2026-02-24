@@ -94,7 +94,7 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
     //    vec, and the cycle continues.
     small_file_shard: &'a mut Shard,
     small_file_seq: u64,
-    metadata: Option<HashMap<Box<str>, usize>>,
+    metadata: Option<Vec<String>>,
     shards: Vec<&'a mut Shard>,
     readable_shards: Vec<&'a mut Shard>,
     pending_markers: BinaryHeap<PendingMarker<'a>>,
@@ -307,7 +307,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     }
 
     // returns file metadata
-    pub fn drain_small_file_shard(&mut self) -> Result<HashMap<Box<str>, usize>> {
+    pub fn drain_small_file_shard(&mut self) -> Result<Vec<String>> {
         loop {
             match pb_read_next(&mut self.small_file_shard.pipe)? {
                 None => {
@@ -593,9 +593,7 @@ pub fn serve(images_dir: &Path,
     // TODO: deal with patch_img while serving
     // patch_img(&mut file_sender, tcp_listen_remaps)?;
     //
-
-    let file_list = metadata.keys().map(|filename| filename.to_string()).collect();
-    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, file_list, Arc::clone(&semaphore));
+    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore));
 
     img_deserializer.drain_all()?;
     eprintln!("BHAVIK: DRAINED EVERYTHING");

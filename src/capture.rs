@@ -130,7 +130,7 @@ struct ImageSerializer<'a> {
     seq: u64,
     current_filename: Option<Rc<str>>,
     current_file_size: u64,
-    metadata: HashMap<String, u64>
+    metadata: Vec<String>
 }
 
 struct Chunk<'a> {
@@ -154,7 +154,7 @@ impl<'a> ImageSerializer<'a> {
             current_filename: None,
             seq: 0,
             current_file_size: 0,
-            metadata: HashMap::new()
+            metadata: Vec::new()
         }
     }
 
@@ -322,8 +322,7 @@ impl<'a> ImageSerializer<'a> {
                         let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
                         self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
                         // we got everything
-                        let old = self.metadata.insert(img_file.filename.as_ref().to_string(), self.current_file_size);
-                        assert!(old.is_none());
+                        self.metadata.push(img_file.filename.as_ref().to_string());
                         self.current_file_size = 0;
                         poller.remove(image_key)?;
                     }
