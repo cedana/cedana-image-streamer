@@ -45,7 +45,7 @@ jobs:
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@retry-mechanism-for-cedana
     needs: [build, download]
     secrets: inherit
     with:
