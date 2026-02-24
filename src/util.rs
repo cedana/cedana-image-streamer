@@ -131,11 +131,11 @@ pub fn is_small_file(filename: &str) -> bool {
         return false;
     }
 
-    // let pagemap_re = Regex::new(r"^pagemap-[0-9]+\.img$").unwrap();
-    // if pagemap_re.is_match(&filename) {
-    //     return false;
-    // }
-    //
+    let pagemap_re = Regex::new(r"^pagemap-[0-9]+\.img$").unwrap();
+    if pagemap_re.is_match(&filename) {
+        return false;
+    }
+
     let ghost_file_re = Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap();
     if ghost_file_re.is_match(&filename) {
         return false;
