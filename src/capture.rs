@@ -20,13 +20,7 @@ use std::{
     cmp::{max, min}, collections::{BinaryHeap, HashMap}, fs, io::Write, os::unix::io::AsRawFd, path::Path, rc::Rc, sync::Once, time::Instant
 };
 use crate::{
-    poller::{Poller, EpollFlags},
-    connection::{Listener, Connection},
-    unix_pipe::{UnixPipe, UnixPipeImpl},
-    util::*,
-    image,
-    image::marker,
-    impl_ord_by,
+    connection::{Connection, Listener}, image::{self, marker}, impl_ord_by, poller::{EpollFlags, Poller}, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{self, *}
 };
 use anyhow::Result;
 use regex::Regex;
@@ -281,56 +275,30 @@ impl<'a> ImageSerializer<'a> {
         Ok(())
     }
 
-    // polls on the fd continuously and ensures that it is compelety drained
-    pub fn drain_img_file(&mut self, file: &mut ImageFile) -> Result<()> {
-        enum PollType<'a> {
-            ImageFile(&'a mut ImageFile)
+    pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
+        let mut readable_len = img_file.pipe.fionread()?;
+
+        // This code is only invoked when the poller reports that the image file's pipe is readable
+        // (or errored), which is why we can detect EOF when fionread() returns 0.
+        let is_eof = readable_len == 0;
+        let is_small_file = util::is_small_file(&img_file.filename);
+
+        self.maybe_write_filename_marker(img_file, is_small_file)?;
+
+        while readable_len > 0 {
+            let data_size = min(readable_len, self.chunk_max_data_size());
+            let marker = self.gen_marker(marker::Body::FileData(data_size as u32), is_small_file);
+            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) }, is_small_file)?;
+            readable_len -= data_size;
         }
-        let is_small_file = crate::util::is_small_file(&file.filename);
-        let mut poller = Poller::new()?;
-        let image_key = poller.add(file.pipe.as_raw_fd(), PollType::ImageFile(file), EpollFlags::EPOLLIN)?;
-        let epoll_capacity = 16;
 
-        while let Some((_poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
-            match poll_obj {
-                PollType::ImageFile(img_file) => {
-                    self.maybe_write_filename_marker(img_file, is_small_file)?;
-
-                    let mut readable_len = img_file.pipe.fionread()?;
-                    let is_eof = readable_len == 0;
-
-                    while readable_len > 0 {
-                        let data_size = min(readable_len, self.chunk_max_data_size());
-                        if is_small_file {
-                            eprintln!("SMALL FILE: WRITING DATA MARKER filename: {}, seq: {}", img_file.filename, self.small_file_seq);
-                        } else {
-                            eprintln!("LARGE FILE: WRITING DATA MARKER filename: {}, seq: {}", img_file.filename, self.seq);
-                        }
-                        let marker = self.gen_marker(marker::Body::FileData(data_size as u32), is_small_file);
-                        self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) }, is_small_file)?;
-                        readable_len -= data_size;
-                    }
-
-                    // This code is only invoked when the poller reports that the image file's pipe is readable
-                    // (or errored), which is why we can detect EOF when fionread() returns 0.
-                    if is_eof {
-                        if is_small_file {
-                            eprintln!("SMALL FILE: WRITING EOF MARKER filename: {}, seq: {}", img_file.filename, self.small_file_seq);
-                        } else {
-                            eprintln!("LARGE FILE: WRITING EOF MARKER filename: {}, seq: {}", img_file.filename, self.seq);
-                        }
-                        let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
-                        self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
-                        // we got everything
-                        self.metadata.push(img_file.filename.as_ref().to_string());
-                        self.current_file_size = 0;
-                        poller.remove(image_key)?;
-                    }
-
-                }
-            }
+        if is_eof {
+            self.metadata.push(img_file.filename.to_string());
+            let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
+            self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
         }
-        Ok(())
+
+        Ok(!is_eof)
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
@@ -429,8 +397,11 @@ pub fn capture(
                 }
             }
             PollType::ImageFile(img_file) => {
-                img_serializer.drain_img_file(img_file)?;
-                poller.remove(poll_key)?;
+                if !img_serializer.drain_img_file(img_file)? {
+                    // EOF of the image file is reached. Note that the image file pipe file
+                    // descriptor is closed automatically as it is owned by the poller.
+                    poller.remove(poll_key)?;
+                }
             }
         }
     }

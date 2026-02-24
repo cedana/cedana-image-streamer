@@ -101,10 +101,15 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
     seq: u64,
 
     // The following fields relate to the output.
+    // When receiving a `Filename(filename)` marker, the `img_files` map is examined to see if we
+    // have an image file corresponding to that filename. If not found, a new image file is created
+    // via the `img_store`. The image file is then placed into `current_img_file`, which becomes the
+    // default destination for incoming data via `FileData` markers.
+    //
     // We use a `Box<str>` instead of `String` for filenames to reduce memory usage by 8 bytes per
     // filenames (`str` are not resizable, `Strings` are, so they need to carry additional information).
     img_store: &'a mut ImgStore,
-    // current_img_file we are reading, when we recieve FileEof marker we put it into the ImgStore
+    img_files: HashMap<Box<str>, ImgStore::File>,
     current_img_file: Option<(Box<str>, ImgStore::File)>,
 
     // `start_time` is used for stats, image_eof is used for safety checks.
@@ -126,6 +131,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
             pending_markers: BinaryHeap::with_capacity(num_shards - 1),
             seq: 0,
             img_store,
+            img_files: HashMap::new(),
             current_img_file: None,
             start_time: Instant::now(),
             image_eof: false,
@@ -133,11 +139,31 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     }
 
     fn mark_image_eof(&mut self) -> Result<()> {
-        ensure!(self.current_img_file.is_none() && self.pending_markers.is_empty(),
+        ensure!(self.img_files.is_empty() && self.pending_markers.is_empty(),
                 "Image EOF marker came unexpectedly");
 
         self.image_eof = true;
-        self.current_img_file = None;
+        Ok(())
+    }
+
+    fn select_img_file(&mut self, filename: Box<str>) -> Result<()> {
+        // First, put the current image file back in the hashmap.
+        // This avoids creating the same image file twice.
+        if let Some((filename, output)) = self.current_img_file.take() {
+            self.img_files.insert(filename, output);
+        }
+
+        // Then, look for an image file in the hashmap with the corresponding filename.
+        // If not found, create a new image file.
+        let (filename, img_file) = match self.img_files.remove_entry(&filename) {
+            Some((filename, img_file)) => (filename, img_file),
+            None => {
+                let img_file = self.img_store.create(&filename)?;
+                (filename, img_file)
+            }
+        };
+
+        self.current_img_file = Some((filename, img_file));
         Ok(())
     }
 
@@ -146,9 +172,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
 
         match marker.body {
             Some(Filename(filename)) => {
-                assert!(self.current_img_file.is_none());
-                let img_file = self.img_store.create(&filename)?;
-                self.current_img_file = Some((filename.into_boxed_str(), img_file));
+                self.select_img_file(filename.into_boxed_str())?;
             }
             Some(FileData(size)) => {
                 let (_filename, img_file) = self.current_img_file.as_mut()
@@ -272,9 +296,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 if &*filename == "metadata.json" {
                     eprintln!("GOT METADATA FILENAME MARKER");
                 }
-                assert!(self.current_img_file.is_none());
-                let img_file = self.img_store.create(&filename)?;
-                self.current_img_file = Some((filename.into_boxed_str(), img_file));
+                self.select_img_file(filename.into_boxed_str())?;
             }
             Some(FileData(size)) => {
                 let (filename, img_file) = self.current_img_file.as_mut()
@@ -299,7 +321,6 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 if filename.as_ref() != "metadata.json" {
                     self.img_store.insert(filename, img_file);
                 }
-                self.current_img_file = None;
             }
             _ => bail!("Malformed image marker"),
         }
