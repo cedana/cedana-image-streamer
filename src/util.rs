@@ -127,22 +127,22 @@ pub fn is_small_file(filename: &str) -> bool {
     }
 
     let pages_re = Regex::new(r"^pages-[0-9]+\.img$").unwrap();
-    if pages_re.is_match(&filename) {
+    if pages_re.is_match(filename) {
         return false;
     }
 
     let ghost_file_re = Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap();
-    if ghost_file_re.is_match(&filename) {
+    if ghost_file_re.is_match(filename) {
         return false;
     }
 
     true
 }
 
-pub fn filter_files(files: &Vec<String>, pattern: &str) -> Vec<String> {
+pub fn filter_files(files: &[String], pattern: &str) -> Vec<String> {
     if pattern.is_empty() {
         // If the pattern is empty, return all files
-        return files.clone();
+        return files.to_owned();
     }
 
     // Convert glob pattern to regex pattern
@@ -169,7 +169,7 @@ pub fn filter_files(files: &Vec<String>, pattern: &str) -> Vec<String> {
     // do a regular expression match
     let re = regex::Regex::new(&regex_pattern);
     match re {
-        Ok(re) => files.clone().iter()
+        Ok(re) => files.to_owned().iter()
             .filter(|&filename| re.is_match(filename))
             .map(|filename| filename.to_string())
             .collect(),

@@ -40,7 +40,7 @@ impl ImageStore for FileSender {
     type File = File;
 
     fn create(&mut self, filename: &str) -> Result<Self::File> {
-        if crate::util::is_small_file(&*filename) {
+        if crate::util::is_small_file(filename) {
             let file_sender = self.small_file_sender.as_ref().cloned().unwrap();
             Ok(File::new(filename.to_string(), Arc::clone(&self.semaphore), file_sender))
         } else {
@@ -55,7 +55,7 @@ impl ImageStore for FileSender {
 
     fn insert(&mut self, filename: impl Into<Box<str>>, _output: Self::File) {
         let filename = filename.into();
-        if crate::util::is_small_file(&*filename) {
+        if crate::util::is_small_file(&filename) {
             assert!(self.small_file_sender.is_some());
             let _ = self.small_file_sender.as_ref().unwrap().send((filename.to_string(), FileContent::Eof));
         } else {

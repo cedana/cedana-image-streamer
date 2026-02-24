@@ -387,7 +387,6 @@ fn spawn_serve_img(
 }
 
 fn send_over_chunks(
-    filename: &String,
     mut chunks: VecDeque<fs_parallel::FileContent>,
     pipe: &mut UnixPipe,
     semaphore: &Arc<Semaphore>
@@ -423,7 +422,7 @@ fn serve_img(
 
     for (filename, buf) in small_file_reciever {
         store.entry(filename)
-            .or_insert_with(VecDeque::new)
+            .or_default()
             .push_back(buf);
     }
 
@@ -452,7 +451,7 @@ fn serve_img(
                 match receiver.try_recv() {
                     Ok((filename, buf)) => {
                         store.entry(filename)
-                            .or_insert_with(VecDeque::new)
+                            .or_default()
                             .push_back(buf);
                     },
                     Err(TryRecvError::Disconnected) => { reciever_eof = true; break; },
@@ -463,15 +462,12 @@ fn serve_img(
 
         let mut idices_to_remove = vec![];
         for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
-            match store.remove(filename.as_str()) {
-                Some(chunks) => {
-                    let sent_all = send_over_chunks(&filename, chunks, pipe, &semaphore)?;
-                    if sent_all {
-                        idices_to_remove.push(i);
-                    }
-                },
-                None => {}
-            }
+             if let Some(chunks) = store.remove(filename.as_str()) {
+                 let sent_all = send_over_chunks(chunks, pipe, &semaphore)?;
+                 if sent_all {
+                     idices_to_remove.push(i);
+                 }
+             }
         }
 
         for i in idices_to_remove.into_iter().rev() {
@@ -511,7 +507,7 @@ fn serve_img(
                                     let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
                                     // send as much data as we have available right now and then
                                     // add it to the list of fds we have that are open
-                                    let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
+                                    let res = send_over_chunks(chunks, &mut pipe, &semaphore)?;
                                     if !res {
                                         open_pipes.push((filename, pipe));
                                     }

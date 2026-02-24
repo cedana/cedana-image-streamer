@@ -104,7 +104,7 @@ impl Connection {
             Some(s) => s as i32
         };
         pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry {
-            exists: exists,
+            exists,
             status: Some(status)
         })?;
         Ok(())
