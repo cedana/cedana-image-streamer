@@ -275,11 +275,6 @@ impl<'a> ImageSerializer<'a> {
             Some(current_filename) if current_filename == filename => {},
             _ => {
                 self.current_filename = Some(Rc::clone(filename));
-                if is_small_file {
-                    eprintln!("SMALL FILE: WRITING FILENAME MARKER filename: {}, seq: {}", filename, self.small_file_seq);
-                } else {
-                    eprintln!("LARGE FILE: WRITING FILENAME MARKER filename: {}, seq: {}", filename, self.seq);
-                }
                 let marker = self.gen_marker(marker::Body::Filename(filename.to_string()), is_small_file);
                 self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
             }
@@ -315,7 +310,7 @@ impl<'a> ImageSerializer<'a> {
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
-        eprintln!("WRITING METADATA: {:#?}", self.metadata);
+        eprintln!("list of files dumped: {:#?}", self.metadata);
         self.write_metadata_to_small_shard()?;
         // write image eof to the main shards
         let marker = self.gen_marker(image::marker::Body::ImageEof(true), false);

@@ -310,9 +310,6 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         assert!(marker.seq == self.small_file_seq);
         match marker.body {
             Some(Filename(filename)) => {
-                if &*filename == "metadata.json" {
-                    eprintln!("GOT METADATA FILENAME MARKER");
-                }
                 self.select_img_file(filename.into_boxed_str())?;
             }
             Some(FileData(size)) => {
@@ -325,7 +322,6 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                     let pipe = &mut self.small_file_shard.pipe;
                     pipe.take(size as u64).read_to_end(&mut metadata_bytes)?;
                     self.metadata = Some(serde_json::from_slice(&metadata_bytes)?);
-                    eprintln!("GOT METADATA: {:#?}", self.metadata.as_ref().unwrap());
                 } else {
                     img_file.write_all_from_pipe(&mut self.small_file_shard.pipe, size as usize)?;
                 }
@@ -401,7 +397,6 @@ fn send_over_chunks(
         match file_content {
             FileContent::Eof => {
                 // we have sent everything
-                eprintln!("BHAVIK: STREAMER: done with {filename}");
                 res = true;
                 break;
             }
@@ -427,13 +422,10 @@ fn serve_img(
     let mut store: HashMap<String, VecDeque<fs_parallel::FileContent>> = HashMap::new();
 
     for (filename, buf) in small_file_reciever {
-        eprintln!("got buf: {filename}, {:?}", buf);
         store.entry(filename)
             .or_insert_with(VecDeque::new)
             .push_back(buf);
     }
-
-    eprintln!("created store with small files: {:#?}", store);
 
     let listener = Listener::bind_for_restore(images_dir)?;
     emit_progress(&mut progress_pipe, "socket-init");
@@ -473,7 +465,6 @@ fn serve_img(
         for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
             match store.remove(filename.as_str()) {
                 Some(chunks) => {
-                    eprintln!("sending over more data to open_pipe: {filename}");
                     let sent_all = send_over_chunks(&filename, chunks, pipe, &semaphore)?;
                     if sent_all {
                         idices_to_remove.push(i);
@@ -484,7 +475,6 @@ fn serve_img(
         }
 
         for i in idices_to_remove.into_iter().rev() {
-            eprintln!("DONE WITH FILE: {} closing pipe", open_pipes[i].0);
             open_pipes.remove(i);
         }
 
@@ -508,9 +498,7 @@ fn serve_img(
                         client.send_file_list_reply(util::filter_files(&file_list, pattern))?;
                     }
                     Some(filename) => {
-                        eprintln!("got a file request for: {}", filename);
                         if !available_files.contains(&filename) {
-                            eprintln!("file does not exist: {}", filename);
                             client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                         } else {
                             match store.remove(&filename) {
@@ -525,7 +513,6 @@ fn serve_img(
                                     // add it to the list of fds we have that are open
                                     let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
                                     if !res {
-                                        eprintln!("not done with {filename} adding it to open_pipes");
                                         open_pipes.push((filename, pipe));
                                     }
                                 }
@@ -610,7 +597,7 @@ pub fn serve(images_dir: &Path,
         },
         Some(limit) => limit as isize
     };
-    eprintln!("using memory limit: {}", limit);
+    eprintln!("memory limit for streamer: {} MB", limit);
     let semaphore = Arc::new(semaphore::Semaphore::new(limit * MB as isize));
     let (sender, reciever) = mpsc::channel();
     let (small_file_sender, small_file_reciever) = mpsc::channel();
@@ -634,9 +621,7 @@ pub fn serve(images_dir: &Path,
     let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore));
 
     img_deserializer.drain_all()?;
-    eprintln!("BHAVIK: DRAINED EVERYTHING");
     file_sender.close_sender();
-    eprintln!("BHAVIK: CLOSED SENDER ONLY JOINING IS LEFT");
     let _ = handle.join();
     Ok(())
 }

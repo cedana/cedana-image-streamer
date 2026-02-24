@@ -42,11 +42,9 @@ impl ImageStore for FileSender {
     fn create(&mut self, filename: &str) -> Result<Self::File> {
         if crate::util::is_small_file(&*filename) {
             let file_sender = self.small_file_sender.as_ref().cloned().unwrap();
-            eprintln!("BHAVIK: creating a small file: {filename}");
             Ok(File::new(filename.to_string(), Arc::clone(&self.semaphore), file_sender))
         } else {
             let file_sender = self.sender.as_ref().cloned().unwrap();
-            eprintln!("BHAVIK: creating a file: {filename}");
             if !self.is_small_file_closed {
                 self.close_small_file_sender();
                 self.is_small_file_closed = true
@@ -59,10 +57,8 @@ impl ImageStore for FileSender {
         let filename = filename.into();
         if crate::util::is_small_file(&*filename) {
             assert!(self.small_file_sender.is_some());
-            eprintln!("BHAVIK: inserting a small file: {filename}");
             let _ = self.small_file_sender.as_ref().unwrap().send((filename.to_string(), FileContent::Eof));
         } else {
-            eprintln!("BHAVIK: inserting a file: {filename}");
             let _ = self.sender.as_ref().unwrap().send((filename.to_string(), FileContent::Eof));
         }
     }
