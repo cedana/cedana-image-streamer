@@ -54,13 +54,13 @@ jobs:
     uses: cedana/cedana/.github/workflows/download.yml@main
     secrets: inherit
     with:
-      cedana_version: main
-      criu_version: criu-dev
-      gpu_version: main
+      cedana_version: retry-mechanism-for-cedana
+      criu_version: feature/ced-1916-add-support-for-retry-mechanism-to-criu
+      gpu_version: feature/ced-1917-add-support-for-retry-mechanism-to-cedana-gpu
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@retry-mechanism-for-cedana
     needs: [build, download]
     secrets: inherit
     with:
