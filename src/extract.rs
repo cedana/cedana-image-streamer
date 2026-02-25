@@ -378,11 +378,12 @@ fn spawn_serve_img(
     small_file_reciever: Receiver<(String, fs_parallel::FileContent)>,
     receiver: Receiver<(String, fs_parallel::FileContent)>,
     file_list: Vec<String>,
-    semaphore: Arc<Semaphore>
+    semaphore: Arc<Semaphore>,
+    tcp_listen_remaps: Vec<(u16, u16)>
 ) -> thread::JoinHandle<Result<()>> {
     let dir = images_dir.to_path_buf();
     thread::spawn(move || {
-        serve_img(&dir, progress_pipe, small_file_reciever, receiver, file_list, semaphore)
+        serve_img(&dir, progress_pipe, small_file_reciever, receiver, file_list, semaphore, tcp_listen_remaps)
     })
 }
 
@@ -415,7 +416,8 @@ fn serve_img(
     small_file_reciever: Receiver<(String, fs_parallel::FileContent)>,
     receiver: Receiver<(String, fs_parallel::FileContent)>,
     file_list: Vec<String>,
-    semaphore: Arc<Semaphore>
+    semaphore: Arc<Semaphore>,
+    tcp_listen_remaps: Vec<(u16, u16)>
 ) -> Result<()>
 {
     let mut store: HashMap<String, VecDeque<fs_parallel::FileContent>> = HashMap::new();
@@ -424,6 +426,13 @@ fn serve_img(
         store.entry(filename)
             .or_default()
             .push_back(buf);
+    }
+
+    if !tcp_listen_remaps.is_empty() {
+        if let Some(files_img) = store.remove("files.img") {
+            let new_files_img = patch_img(files_img, tcp_listen_remaps)?;
+            store.insert("files.img".to_string(), new_files_img);
+        }
     }
 
     let listener = Listener::bind_for_restore(images_dir)?;
@@ -614,7 +623,7 @@ pub fn serve(images_dir: &Path,
     // TODO: deal with patch_img while serving
     // patch_img(&mut file_sender, tcp_listen_remaps)?;
     //
-    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore));
+    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
 
     img_deserializer.drain_all()?;
     file_sender.close_sender();
