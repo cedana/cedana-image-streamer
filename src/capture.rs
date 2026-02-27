@@ -19,12 +19,13 @@
 use std::{
     collections::{BinaryHeap},
     os::unix::io::AsRawFd,
+    io::Write,
     time::Instant,
     cmp::{min, max},
     path::Path,
     sync::Once,
     rc::Rc,
-    fs,
+    fs
 };
 use crate::{
     poller::{Poller, EpollFlags},
@@ -36,6 +37,8 @@ use crate::{
     impl_ord_by,
 };
 use anyhow::Result;
+use nix::poll::PollTimeout;
+use nix::sys::epoll::{Epoll, EpollEvent, EpollCreateFlags, EpollTimeout};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
@@ -129,10 +132,14 @@ impl_ord_by!(Shard, |a: &Self, b: &Self| a.remaining_space.cmp(&b.remaining_spac
 /// file, but for simplicity, we use a global sequence number. It makes the implementation easier,
 /// esp. on the deserializer side.
 struct ImageSerializer<'a> {
+    small_file_shard: &'a mut Shard,
+    small_file_seq: u64,
     shards: BinaryHeap<&'a mut Shard>,
     shard_pipe_capacity: i32, // constant
     seq: u64,
     current_filename: Option<Rc<str>>,
+    current_file_size: u64,
+    metadata: Vec<String>
 }
 
 struct Chunk<'a> {
@@ -146,13 +153,35 @@ static CHUNK_MARKER_KERNEL_SIZE: &PAGE_SIZE = &PAGE_SIZE;
 
 impl<'a> ImageSerializer<'a> {
     pub fn new(shards: &'a mut [Shard], shard_pipe_capacity: i32) -> Self {
-        assert!(!shards.is_empty());
+        assert!(shards.len() >= 2);
+        let mut shard_iter = shards.iter_mut();
         Self {
+            small_file_shard: shard_iter.nth(0).unwrap(),
+            small_file_seq: 0,
             shard_pipe_capacity,
-            shards: shards.iter_mut().collect(),
+            shards: shard_iter.collect(),
             current_filename: None,
             seq: 0,
+            current_file_size: 0,
+            metadata: Vec::new()
         }
+    }
+
+    fn write_metadata_to_small_shard(&mut self) -> Result<()> {
+        let mut marker = self.gen_marker(marker::Body::Filename("metadata.json".to_string()), true);
+        self.write_chunk(Chunk { marker, data: None }, true)?;
+
+        // we have to directly write metadata instead of call write_chunk because it expects
+        // a image file or a pipe
+        let bytes = serde_json::to_vec(&self.metadata)?;
+        marker = self.gen_marker(marker::Body::FileData(bytes.len() as u32), true);
+        let marker_size = pb_write(&mut self.small_file_shard.pipe, &marker)?;
+        self.small_file_shard.pipe.write_all(&bytes)?;
+        self.small_file_shard.bytes_written += bytes.len() as u64 + marker_size as u64;
+
+        marker = self.gen_marker(marker::Body::FileEof(true), true);
+        self.write_chunk(Chunk { marker, data: None }, true)?;
+        Ok(())
     }
 
     fn refresh_all_shard_remaining_space(&mut self) -> Result<()> {
@@ -168,9 +197,15 @@ impl<'a> ImageSerializer<'a> {
         Ok(())
     }
 
-    fn gen_marker(&mut self, body: marker::Body) -> image::Marker {
-        let seq = self.seq;
-        self.seq += 1;
+    fn gen_marker(&mut self, body: marker::Body, is_small_file: bool) -> image::Marker {
+        let seq;
+        if is_small_file {
+            seq = self.small_file_seq;
+            self.small_file_seq += 1;
+        } else {
+            seq = self.seq;
+            self.seq += 1;
+        }
         image::Marker { seq, body: Some(body) }
     }
 
@@ -182,7 +217,7 @@ impl<'a> ImageSerializer<'a> {
         max(self.shard_pipe_capacity/4 - **CHUNK_MARKER_KERNEL_SIZE as i32, *PAGE_SIZE as i32)
     }
 
-    fn write_chunk(&mut self, chunk: Chunk) -> Result<()> {
+    fn write_chunk(&mut self, chunk: Chunk, is_small_file: bool) -> Result<()> {
         let data_size = match chunk.data {
             None => 0,
             Some((_, size)) => size,
@@ -191,35 +226,50 @@ impl<'a> ImageSerializer<'a> {
         // Estimate the space required in the shard pipe to write the marker and its data.
         let space_required = **CHUNK_MARKER_KERNEL_SIZE as i32 + data_size;
 
-        // Check if the shard with the most remaining space is likely to block.
-        // If so, refresh other pipes' remaining space to check for a better candidate.
-        // Note: it's safe to unwrap(), because we always have one shard to work with.
-        if self.shards.peek().unwrap().remaining_space < space_required {
-            // We refresh the `remaining_space` of all shards instead of just refreshing the
-            // current shard, otherwise we risk starvation of other shards without knowing it.
-            self.refresh_all_shard_remaining_space()?;
+        match is_small_file {
+            false => {
+                // Check if the shard with the most remaining space is likely to block.
+                // If so, refresh other pipes' remaining space to check for a better candidate.
+                // Note: it's safe to unwrap(), because we always have one shard to work with.
+                if self.shards.peek().unwrap().remaining_space < space_required {
+                    // We refresh the `remaining_space` of all shards instead of just refreshing the
+                    // current shard, otherwise we risk starvation of other shards without knowing it.
+                    self.refresh_all_shard_remaining_space()?;
+                }
+
+                // Pick the shard with the greatest remaining space for our write. We might block when we
+                // write, but that's inevitable, and that's how our output is throttled.
+                let mut shard = self.shards.peek_mut().unwrap();
+                // 1) Write the chunk marker
+                let marker_size = pb_write(&mut shard.pipe, &chunk.marker)?;
+
+                // 2) and its associated data, if specified
+                if let Some((img_file, _)) = chunk.data {
+                    img_file.pipe.splice_all(&mut shard.pipe, data_size as usize)?;
+                }
+
+                shard.bytes_written += marker_size as u64 + data_size as u64;
+                self.current_file_size += marker_size as u64 + data_size as u64;
+                shard.remaining_space -= space_required;
+                // As the shard reference drops, the binary heap gets reordered. nice.
+
+                Ok(())
+            }
+            true => {
+                let marker_size = pb_write(&mut self.small_file_shard.pipe, &chunk.marker)?;
+                if let Some((img_file, _)) = chunk.data {
+                    img_file.pipe.splice_all(&mut self.small_file_shard.pipe, data_size as usize)?;
+                }
+                self.current_file_size += marker_size as u64 + data_size as u64;
+                self.small_file_shard.bytes_written += marker_size as u64 + data_size as u64;
+                self.small_file_shard.remaining_space -= space_required;
+                Ok(())
+            }
         }
 
-        // Pick the shard with the greatest remaining space for our write. We might block when we
-        // write, but that's inevitable, and that's how our output is throttled.
-        let mut shard = self.shards.peek_mut().unwrap();
-
-        // 1) Write the chunk marker
-        let marker_size = pb_write(&mut shard.pipe, &chunk.marker)?;
-
-        // 2) and its associated data, if specified
-        if let Some((img_file, _)) = chunk.data {
-            img_file.pipe.splice_all(&mut shard.pipe, data_size as usize)?;
-        }
-
-        shard.bytes_written += marker_size as u64 + data_size as u64;
-        shard.remaining_space -= space_required;
-        // As the shard reference drops, the binary heap gets reordered. nice.
-
-        Ok(())
     }
 
-    fn maybe_write_filename_marker(&mut self, img_file: &ImageFile) -> Result<()> {
+    fn maybe_write_filename_marker(&mut self, img_file: &ImageFile, is_small_file: bool) -> Result<()> {
         // We avoid repeating the filename on sequential data chunks of the same file for
         // performance. We write the filename only when needed.
         let filename = &img_file.filename;
@@ -227,42 +277,46 @@ impl<'a> ImageSerializer<'a> {
             Some(current_filename) if current_filename == filename => {},
             _ => {
                 self.current_filename = Some(Rc::clone(filename));
-                let marker = self.gen_marker(marker::Body::Filename(filename.to_string()));
-                self.write_chunk(Chunk { marker, data: None })?;
+                let marker = self.gen_marker(marker::Body::Filename(filename.to_string()), is_small_file);
+                self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
             }
         }
 
         Ok(())
     }
 
-    /// Returns false if EOF of img_file is reached, true otherwise.
     pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
         let mut readable_len = img_file.pipe.fionread()?;
 
         // This code is only invoked when the poller reports that the image file's pipe is readable
         // (or errored), which is why we can detect EOF when fionread() returns 0.
         let is_eof = readable_len == 0;
+        let is_small_file = is_small_file(&img_file.filename);
 
-        self.maybe_write_filename_marker(img_file)?;
+        self.maybe_write_filename_marker(img_file, is_small_file)?;
 
         while readable_len > 0 {
             let data_size = min(readable_len, self.chunk_max_data_size());
-            let marker = self.gen_marker(marker::Body::FileData(data_size as u32));
-            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) })?;
+            let marker = self.gen_marker(marker::Body::FileData(data_size as u32), is_small_file);
+            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) }, is_small_file)?;
             readable_len -= data_size;
         }
 
         if is_eof {
-            let marker = self.gen_marker(marker::Body::FileEof(true));
-            self.write_chunk(Chunk { marker, data: None })?;
+            self.metadata.push(img_file.filename.to_string());
+            let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
+            self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
         }
 
         Ok(!is_eof)
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
-        let marker = self.gen_marker(image::marker::Body::ImageEof(true));
-        self.write_chunk(Chunk { marker, data: None })
+        eprintln!("list of files dumped: {:#?}", self.metadata);
+        self.write_metadata_to_small_shard()?;
+        // write image eof to the main shards
+        let marker = self.gen_marker(image::marker::Body::ImageEof(true), false);
+        self.write_chunk(Chunk { marker, data: None }, false)
     }
 }
 
@@ -314,7 +368,7 @@ pub fn capture(
     // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
     // connection is typically at most 2.
     let epoll_capacity = 16;
-    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
+    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity, EpollTimeout::NONE)? {
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;

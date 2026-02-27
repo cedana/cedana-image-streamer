@@ -12,19 +12,20 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use bytes::Buf;
 
 use std::{
-    collections::HashMap,
-    io::{Read, Write},
+    collections::{HashMap, VecDeque},
+    io::{Cursor, Read, Write},
     mem::size_of,
 };
 
 use crate::{
-    image_store::{self, ImageStore},
-    util::{pb_read_next, read_bytes_next, pb_write},
     criu,
+    image_store::{self, ImageStore, fs_parallel::{self, FileContent}},
+    mmap_buf::MmapBuf,
+    util::{pb_read_next, pb_write, read_bytes_next},
 };
 
 // These magic consts are defined in the CRIU project in criu/include/magic.h
@@ -57,24 +58,16 @@ fn write_criu_img_header(writer: &mut impl Write, header_magic: u32) -> Result<(
 }
 
 fn patch_tcp_listen_remaps(
-    img_store: &mut image_store::mem::Store,
+    data: &mut Vec<u8>,
     tcp_listen_remaps: Vec<(u16, u16)>,
-) -> Result<()>
-{
-    if tcp_listen_remaps.is_empty() {
-        return Ok(());
-    }
-
+) -> Result<()> {
     let mut tcp_listen_remaps: HashMap<u16, u16> = tcp_listen_remaps.into_iter().collect();
 
-    // remove() corresponds to HashMap::remove() in the memory store.
-    let old_files = img_store.remove("files.img")
-        .ok_or_else(|| anyhow!("files.img is missing from the image"))?;
-    let mut old_files = old_files.reader();
-    read_criu_img_header(&mut old_files, FILES_MAGIC)?;
+    let mut cursor = Cursor::new(&mut *data);
+    read_criu_img_header(&mut cursor, FILES_MAGIC)?;
 
-    let mut new_files = img_store.create("files.img")?;
-    write_criu_img_header(&mut new_files, FILES_MAGIC)?;
+    let mut new_data = Vec::new();
+    write_criu_img_header(&mut new_data, FILES_MAGIC)?;
 
     // We take the original "files.img" file (`old_files`), we apply a few
     // transformations, and produce a new "files.img" file (`new_files`).
@@ -94,7 +87,7 @@ fn patch_tcp_listen_remaps(
     // This vec is used to provide useful error messages
     let mut old_tcp_listen_ports = Vec::new();
 
-    while let Some((mut file_entry, _)) = pb_read_next::<_,criu::FileEntry>(&mut old_files)? {
+    while let Some((mut file_entry, _)) = pb_read_next::<_, criu::FileEntry>(&mut cursor)? {
         if let Some(ref mut isk) = file_entry.isk {
             if isk.proto == libc::IPPROTO_TCP as u32 && isk.state == TCP_LISTEN {
                 old_tcp_listen_ports.push(isk.src_port);
@@ -103,27 +96,49 @@ fn patch_tcp_listen_remaps(
                 }
             }
         }
-        pb_write(&mut new_files, &file_entry)?;
+        pb_write(&mut new_data, &file_entry)?;
     }
 
     if !tcp_listen_remaps.is_empty() {
         let remap_ports_not_found = tcp_listen_remaps.keys().collect::<Vec<_>>();
-        bail!("The following TCP listen ports were found in the checkpoint image: {:?}. \
+        bail!(
+            "The following TCP listen ports were found in the checkpoint image: {:?}. \
                These requested port remaps could not be matched: {:?}",
-              old_tcp_listen_ports, remap_ports_not_found);
+            old_tcp_listen_ports,
+            remap_ports_not_found
+        );
     }
 
-    img_store.insert("files.img", new_files);
+    *data = new_data;
 
     Ok(())
 }
 
 pub fn patch_img(
-    img_store: &mut image_store::mem::Store,
+    mut file_contents: VecDeque<fs_parallel::FileContent>,
     tcp_listen_remaps: Vec<(u16, u16)>,
-) -> Result<()>
-{
-    patch_tcp_listen_remaps(img_store, tcp_listen_remaps)
+) -> Result<VecDeque<fs_parallel::FileContent>> {
+    let mut data = Vec::new();
+
+    while let Some(content) = file_contents.pop_front() {
+        match content {
+            FileContent::Content(mmap_buf) => {
+                data.extend_from_slice(&mmap_buf);
+            }
+            FileContent::Eof => break,
+        }
+    }
+
+    patch_tcp_listen_remaps(&mut data, tcp_listen_remaps)
         .context("Failed to remap TCP listen ports")?;
-    Ok(())
+
+    let mut new_mmap = MmapBuf::with_capacity(data.len());
+    new_mmap.resize(data.len());
+    new_mmap.copy_from_slice(&data);
+
+    let mut result = VecDeque::new();
+    result.push_back(FileContent::Content(new_mmap));
+    result.push_back(FileContent::Eof);
+
+    Ok(result)
 }

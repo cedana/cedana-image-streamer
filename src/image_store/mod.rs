@@ -15,6 +15,7 @@
 pub mod fs_overlay;
 pub mod fs;
 pub mod mem;
+pub mod fs_parallel;
 
 use anyhow::Result;
 use crate::unix_pipe::UnixPipe;

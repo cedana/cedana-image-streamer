@@ -13,6 +13,7 @@
 //  limitations under the License.
 
 use prost::Message;
+use regex::Regex;
 use std::{
     mem::size_of,
     os::unix::net::UnixStream,
@@ -112,6 +113,80 @@ pub fn emit_progress(progress_pipe: &mut fs::File, msg: &str) {
 pub fn create_dir_all(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("Failed to create directory {}", dir.display()))
+}
+
+pub fn is_small_file(filename: &str) -> bool {
+    // cedana file
+    if filename == "process_state.json" {
+        return true;
+    }
+
+    // gpu files
+    if !filename.ends_with(".img") {
+        if filename.contains("noctx") {
+            eprintln!("[is_small_file] dumping a noctx file: {}", filename);
+            return true;
+        }
+
+        if filename.contains("size") {
+            eprintln!("[is_small_file] dumping a size file: {}", filename);
+            return true;
+        }
+        return false;
+    }
+
+    let pages_re = Regex::new(r"^pages-[0-9]+\.img$").unwrap();
+    if pages_re.is_match(filename) {
+        return false;
+    }
+
+    let ghost_file_re = Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap();
+    if ghost_file_re.is_match(filename) {
+        return false;
+    }
+
+    true
+}
+
+pub fn filter_files(files: &[String], pattern: &str) -> Vec<String> {
+    if pattern.is_empty() {
+        // If the pattern is empty, return all files
+        return files.to_owned();
+    }
+
+    // Convert glob pattern to regex pattern
+    // Escape regex special characters first, then convert glob wildcards
+    let mut regex_pattern = String::new();
+    regex_pattern.push('^'); // Match from start of string
+
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex_pattern.push_str(".*"),  // * matches any characters
+            '?' => regex_pattern.push('.'),       // ? matches any single character
+            // Escape regex special characters
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex_pattern.push('\\');
+                regex_pattern.push(ch);
+            }
+            // Regular characters pass through
+            _ => regex_pattern.push(ch),
+        }
+    }
+
+    regex_pattern.push('$'); // Match to end of string
+
+    // do a regular expression match
+    let re = regex::Regex::new(&regex_pattern);
+    match re {
+        Ok(re) => files.to_owned().iter()
+            .filter(|&filename| re.is_match(filename))
+            .map(|filename| filename.to_string())
+            .collect(),
+        Err(_) => {
+            // If the regex is invalid, return an empty list
+            vec![]
+        }
+    }
 }
 
 #[derive(Serialize)]
