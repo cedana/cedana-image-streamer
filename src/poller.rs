@@ -72,7 +72,7 @@ impl<T> Poller<T> {
     ///
     /// `capacity` corresponds to the number of file descriptors that can be returned by a single
     /// system call.
-    pub fn poll(&mut self, capacity: usize) -> Result<Option<(Key, &mut T)>> {
+    pub fn poll(&mut self, capacity: usize, timeout: EpollTimeout) -> Result<Option<(Key, &mut T)>> {
         if self.slab.is_empty() {
             return Ok(None);
         }
@@ -80,14 +80,18 @@ impl<T> Poller<T> {
         if self.pending_events.is_empty() {
             self.pending_events.resize(capacity, EpollEvent::empty());
 
-            let num_ready_fds = epoll_wait_no_intr(&self.epoll, &mut self.pending_events)
+            let num_ready_fds = epoll_wait_no_intr(&self.epoll, &mut self.pending_events, timeout)
                 .context("Failed to wait on epoll")?;
+
+            eprintln!("[serve_img] num_ready_fds: {}", num_ready_fds);
+            self.pending_events.truncate(num_ready_fds);
+            if num_ready_fds == 0 {
+                eprintln!("[serve_img] 0 ready fds");
+                return Ok(None);
+            }
 
             // We don't use a timeout (None = infinite), and we have events registered (slab is not empty)
             // so we should have a least one fd ready.
-            assert!(num_ready_fds > 0);
-
-            self.pending_events.truncate(num_ready_fds);
         }
 
         let event = self.pending_events.pop().unwrap();
@@ -97,10 +101,14 @@ impl<T> Poller<T> {
     }
 }
 
-pub fn epoll_wait_no_intr(epoll: &Epoll, events: &mut [EpollEvent]) -> nix::Result<usize> {
+pub fn epoll_wait_no_intr(epoll: &Epoll, events: &mut [EpollEvent], timeout: EpollTimeout) -> nix::Result<usize> {
     loop {
-        match epoll.wait(events, EpollTimeout::NONE) {
+        match epoll.wait(events, timeout) {
             Err(Errno::EINTR) => continue,
+            Ok(0) => {
+                eprintln!("[serve_img] timed out");
+                return Ok(0)
+            }
             other => return other,
         }
     }

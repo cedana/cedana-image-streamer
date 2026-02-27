@@ -41,6 +41,8 @@ use crate::{
     criu::FileStatus
 };
 use nix::{poll::{PollFd, PollFlags, PollTimeout, poll}, sys::{epoll::EpollFlags, sysinfo::sysinfo}};
+
+use nix::sys::epoll::{Epoll, EpollEvent, EpollCreateFlags, EpollTimeout};
 use anyhow::Result;
 
 // The serialized image is received via multiple data streams (`Shard`). The data streams are
@@ -388,6 +390,7 @@ fn spawn_serve_img(
 }
 
 fn send_over_chunks(
+    filename: &str,
     mut chunks: VecDeque<fs_parallel::FileContent>,
     pipe: &mut UnixPipe,
     semaphore: &Arc<Semaphore>
@@ -401,8 +404,11 @@ fn send_over_chunks(
                 break;
             }
             FileContent::Content(chunk) => {
+                eprintln!("[serve_img] sent a chunk filename: {}", filename);
                 pipe.vmsplice_all(&chunk)?;
+                eprintln!("[serve_img] send_over_chunks trying to release semaphore");
                 semaphore.release(chunk.len() as isize);
+                eprintln!("[serve_img] send_over_chunks released semaphore");
             }
         }
     }
@@ -427,6 +433,7 @@ fn serve_img(
             .or_default()
             .push_back(buf);
     }
+    eprintln!("[serve_img] read small files in store: {:?}", store.keys().into_iter().collect::<Vec<_>>());
 
     if !tcp_listen_remaps.is_empty() {
         if let Some(files_img) = store.remove("files.img") {
@@ -451,28 +458,35 @@ fn serve_img(
     let available_files: HashSet<String> = file_list.clone().into_iter().collect();
     let mut reciever_eof = false;
     let mut open_pipes: Vec<(String, UnixPipe)> = vec![];
+    let mut stopped = false;
 
     let epoll_capacity = 16;
     loop {
+        eprintln!("[serve_img] hot loop still running");
+        eprintln!("[serve_img] store: {:?}", store.keys().collect::<Vec<_>>());
         // get a chunk from reciever
         if !reciever_eof {
             loop {
+                eprintln!("[serve_img] inside reciever loop");
                 match receiver.try_recv() {
                     Ok((filename, buf)) => {
+                        eprintln!("[serve_img] got a chunk: {}!", &filename);
                         store.entry(filename)
                             .or_default()
                             .push_back(buf);
                     },
-                    Err(TryRecvError::Disconnected) => { reciever_eof = true; break; },
-                    Err(TryRecvError::Empty) => { break; }
+                    Err(TryRecvError::Disconnected) => { reciever_eof = true; eprintln!("[serve_img] reciever disconnected, have everything!"); break; },
+                    Err(TryRecvError::Empty) => {eprintln!("[serve_img] nothing to recieve right now!"); break; }
                 }
             }
         }
 
+        eprintln!("[serve_img] handling open_pipes len: {}", open_pipes.len());
         let mut idices_to_remove = vec![];
         for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
              if let Some(chunks) = store.remove(filename.as_str()) {
-                 let sent_all = send_over_chunks(chunks, pipe, &semaphore)?;
+                eprintln!("[serve_img] open_pipe: {} sending over chunks", filename);
+                 let sent_all = send_over_chunks(&filename, chunks, pipe, &semaphore)?;
                  if sent_all {
                      idices_to_remove.push(i);
                  }
@@ -483,11 +497,21 @@ fn serve_img(
             open_pipes.remove(i);
         }
 
-        let obj = poller.poll(epoll_capacity)?;
-        let Some((_, poll_obj)) = obj else { break };
+        eprintln!("[serve_img] about to poll for new requests");
+        let obj = poller.poll(epoll_capacity, EpollTimeout::try_from(2000)?)?;
+        eprintln!("[serve_img] sucessfully polled for a request");
+        let Some((_, poll_obj)) = obj else {
+            if stopped && open_pipes.len() == 0 {
+                eprintln!("[serve_img] sent everything");
+                break;
+            }
+            eprintln!("[serve_img] weird continue");
+            continue;
+        };
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;
+                eprintln!("[serve_img] accepted new connection");
                 poller.add(conn.as_raw_fd(), PollType::Client(conn), EpollFlags::EPOLLIN)?;
             }
             PollType::Client(client) => {
@@ -495,34 +519,43 @@ fn serve_img(
                     Some(ref filename) if filename == "stop-listener" => {
                         // Stop accepting any new connections. Pending files will still be
                         // processed.
+                        eprintln!("[serve_img] stop-listener");
+                        stopped = true;
                         poller.remove(listener_key)?;
                     }
                     // check if filename has a wildcard
                     Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
                         // List all files in the image store.
-                        client.send_file_list_reply(util::filter_files(&file_list, pattern))?;
+                        let res = util::filter_files(&file_list, pattern);
+                        eprintln!("[serve_img] got a file list request pattern {}", pattern);
+                        client.send_file_list_reply(res)?;
                     }
                     Some(filename) => {
                         if !available_files.contains(&filename) {
+                            eprintln!("[serve_img] do not have: {}", &filename);
                             client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                         } else {
+                            eprintln!("[serve_img] got a file request {}", &filename);
                             match store.remove(&filename) {
                                 Some(chunks) => {
                                     // we should not get anymore requests for the file
                                     filenames_of_sent_files.insert(filename.clone());
                                     client.send_file_reply(true, Some(FileStatus::Ready))?; // true means that the file exists.
                                     let mut pipe = client.recv_pipe()?;
+                                    eprintln!("[serve_img] recieved a pipe from client: {}", &filename);
                                     // Try setting the pipe capacity. Failing is okay.
                                     let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
                                     // send as much data as we have available right now and then
                                     // add it to the list of fds we have that are open
-                                    let res = send_over_chunks(chunks, &mut pipe, &semaphore)?;
+                                    eprintln!("[serve_img] sending over available chunks: {}", &filename);
+                                    let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
                                     if !res {
                                         open_pipes.push((filename, pipe));
                                     }
                                 }
                                 None => {
                                     if available_files.contains(&filename) && !filenames_of_sent_files.contains(&filename) {
+                                        eprintln!("[serve_img] file not ready: {}", &filename);
                                         client.send_file_reply(true, Some(FileStatus::NotReady))?;
                                     } else {
                                         // If we keep the image file in our process, Client will also
@@ -532,6 +565,7 @@ fn serve_img(
                                         ensure!(!filenames_of_sent_files.contains(&filename) && !available_files.contains(&filename),
                                             "Client is requesting the image file `{}` multiple times. \
                                             This is not allowed to keep the memory usage low", &filename);
+                                        eprintln!("[serve_img] ensure do not have that file: {}", &filename);
                                         client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                                     }
                                 }
@@ -539,6 +573,7 @@ fn serve_img(
                         }
                     }
                     None => {
+                        eprintln!("[serve_img] doing nothing");
                         // Do nothing.
                     }
                 }

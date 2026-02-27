@@ -37,6 +37,8 @@ use crate::{
     impl_ord_by,
 };
 use anyhow::Result;
+use nix::poll::PollTimeout;
+use nix::sys::epoll::{Epoll, EpollEvent, EpollCreateFlags, EpollTimeout};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
@@ -366,7 +368,7 @@ pub fn capture(
     // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
     // connection is typically at most 2.
     let epoll_capacity = 16;
-    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
+    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity, EpollTimeout::NONE)? {
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;
