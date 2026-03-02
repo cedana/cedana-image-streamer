@@ -162,6 +162,9 @@ fn do_main() -> Result<()> {
     ensure!(opts.operation == Serve || opts.tcp_listen_remap.is_empty(),
             "--tcp-listen-remap is only supported when serving the image");
 
+    ensure!(opts.operation == Serve || opts.memory_limit.is_none(),
+            "--memory-limit is only supported when serving the image");
+
     match opts.operation {
         Capture => capture(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
         Extract => extract(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
@@ -190,6 +193,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -203,6 +207,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Extract,
+                memory_limit: None
             })
     }
 
@@ -216,6 +221,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Serve,
+                memory_limit: None
             })
     }
 
@@ -230,6 +236,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -243,6 +250,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -256,6 +264,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![(2000,3000),(5000,6000)],
                 progress_fd: None,
                 operation: Operation::Serve,
+                memory_limit: None
             })
     }
 
@@ -269,6 +278,21 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: Some(3),
                 operation: Operation::Capture,
+                memory_limit: None
+            })
+    }
+
+    #[test]
+    fn test_memory_limit() {
+        assert_eq!(Opts::from_iter(&vec!["prog", "--images-dir", "imgdir", "--memory-limit", "500", "serve"]),
+            Opts {
+                images_dir: PathBuf::from("imgdir"),
+                shard_fds: vec![],
+                ext_file_fds: vec![],
+                tcp_listen_remap: vec![],
+                progress_fd: None,
+                operation: Operation::Serve,
+                memory_limit: Some(500)
             })
     }
 }
