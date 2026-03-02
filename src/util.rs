@@ -124,12 +124,10 @@ pub fn is_small_file(filename: &str) -> bool {
     // gpu files
     if !filename.ends_with(".img") {
         if filename.contains("noctx") {
-            eprintln!("[is_small_file] dumping a noctx file: {}", filename);
             return true;
         }
 
         if filename.contains("size") {
-            eprintln!("[is_small_file] dumping a size file: {}", filename);
             return true;
         }
         return false;

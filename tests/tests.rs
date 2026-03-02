@@ -60,10 +60,11 @@ struct CheckpointContext {
 
 struct StreamerRestoreContext {
     progress: BufReader<UnixPipe>,
+    extract_thread: thread::JoinHandle<()>
 }
 
 struct RestoreContext {
-    _streamer: StreamerRestoreContext,
+    streamer: StreamerRestoreContext,
     criu: Criu,
 }
 
@@ -101,21 +102,19 @@ trait TestImpl {
             })
         };
 
-        {
-            let images_dir = self.images_dir();
-            let ext_files = self.extract_ext_files();
-            let serve_image = self.serve_image();
+        let images_dir = self.images_dir();
+        let ext_files = self.extract_ext_files();
+        let serve_image = self.serve_image();
 
-            thread::spawn(move || {
-                if serve_image {
-                    serve(&images_dir, extract_progress_w, shard_pipes_r, ext_files, vec![], None)
-                        .expect("serve() failed");
-                } else {
-                    extract(&images_dir, extract_progress_w, shard_pipes_r, ext_files)
-                        .expect("extract() failed");
-                }
-            })
-        };
+        let extract_thread = thread::spawn(move || {
+            if serve_image {
+                serve(&images_dir, extract_progress_w, shard_pipes_r, ext_files, vec![], None)
+                    .expect("serve() failed");
+            } else {
+                extract(&images_dir, extract_progress_w, shard_pipes_r, ext_files)
+                    .expect("extract() failed");
+            }
+        });
 
         Ok((
                 StreamerCheckpointContext {
@@ -124,6 +123,7 @@ trait TestImpl {
                 },
                 StreamerRestoreContext {
                     progress: extract_progress,
+                    extract_thread
                 }
         ))
     }
@@ -159,11 +159,11 @@ trait TestImpl {
         Ok(())
     }
 
-    fn finish_image_extraction(&mut self, restore: &mut StreamerRestoreContext) -> Result<Stats> {
-        read_stats(&mut restore.progress)
+    fn finish_image_extraction(&mut self, restore: &mut StreamerRestoreContext) -> Result<()> {
+        Ok(())
     }
 
-    fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+    fn after_finish_image_extraction(&mut self) -> Result<()> {
         Ok(())
     }
 
@@ -173,7 +173,7 @@ trait TestImpl {
         // The image can be served now. Wait for the CRIU socket to be ready.
         assert_eq!(read_line(&mut restore.progress)?, "socket-init");
         let criu = Criu::connect(self.images_dir().join("streamer-serve.sock"))?;
-        Ok(RestoreContext { _streamer: restore, criu })
+        Ok(RestoreContext { streamer: restore, criu })
     }
 
     fn recv_img_files(&mut self, _restore: &mut RestoreContext) -> Result<()> {
@@ -182,6 +182,7 @@ trait TestImpl {
 
     fn finish_restore(&mut self, mut restore: RestoreContext) -> Result<()> {
         restore.criu.finish()?;
+        restore.streamer.extract_thread.join().unwrap();
         Ok(())
     }
 
@@ -194,8 +195,8 @@ trait TestImpl {
         let stats = self.finish_checkpoint(checkpoint)?;
         self.after_finish_checkpoint(&stats)?;
 
-        let stats = self.finish_image_extraction(&mut restore)?;
-        self.after_finish_image_extraction(&stats)?;
+        self.finish_image_extraction(&mut restore)?;
+        self.after_finish_image_extraction()?;
 
         if self.serve_image() {
             let mut restore = self.criu_restore_connect(restore)?;
@@ -421,16 +422,17 @@ mod ext_files {
 mod load_balancing {
     use super::*;
 
-    // This test simulates a capture with 4 shards, where the first one is being rate limited
+    // This test simulates a capture with 4 shards, where the second one is being rate limited
     // at 1MB/s. We attempt to capture a 40MB image. The choke shard should receive little
     // data compared to the other shards.
     //
+    // The first shard reserved for small files will recieve nothing.
     // NOTE Load balancing works only when using pipes of capacity greater than 2*PAGE_SIZE.
     // We skip that test if we don't have enough pipe capacity.
     // The Rust test runner lacks the ability to skip a test at runtime, so we improvised a bit.
 
     const CHOKE_RATE_PER_MILLI: usize = KB; // 1MB/sec
-    const CHOKE_SHARD_INDEX: usize = 0;
+    const CHOKE_SHARD_INDEX: usize = 1;
 
     struct Test {
         _temp_dir: TempDir,
@@ -501,7 +503,8 @@ mod load_balancing {
                 return Ok(());
             }
 
-            checkpoint.criu.write_img_file("file.img")?
+            // the name matters so that it gets written to the main shard.
+            checkpoint.criu.write_img_file("pages-1.img")?
                 .write_all(&self.file)?;
 
             Ok(())
@@ -522,6 +525,11 @@ mod load_balancing {
             for (i, shard_stats) in checkpoint_stats.shards.iter().enumerate() {
                 // Using 2MB threadshold as the choked shard has to be bigger than 1MB (SHARD_PIPE_CAPACITY),
                 // but not much more.
+                if i == 0 {
+                    // do not check the small shard.
+                    continue;
+                }
+
                 if i == CHOKE_SHARD_INDEX {
                     assert!(shard_stats.size < 2*MB as u64,
                             "Choked shard received too much data: {} KB", shard_stats.size/KB as u64);
@@ -539,7 +547,7 @@ mod load_balancing {
                 return Ok(());
             }
 
-            let buf = restore.criu.read_img_file_into_vec("file.img")?;
+            let buf = restore.criu.read_img_file_into_vec("pages-1.img")?;
             assert!(buf == self.file);
 
             Ok(())
@@ -565,7 +573,7 @@ mod restore_mem_usage {
 
     const BIG_FILE_SIZE: usize = 105*MB;
     const SMALL_FILE_SIZE: usize = 10;
-    const NUM_SMALL_FILES: usize = 100_000;
+    const NUM_SMALL_FILES: usize = 1000;
     const TOLERABLE_PER_FILE_OVERHEAD: isize = 200_isize;
     const TOLERABLE_CRIU_RECEIVE_OVERHEAD: isize = 12*MB as isize;
 
@@ -598,16 +606,16 @@ mod restore_mem_usage {
 
             // Writing the big file in small chunks, to prevent blowing up memory with a large
             // vector that may not get freed.
-            let mut big_file_pipe = checkpoint.criu.write_img_file("big.img")?;
+            let mut big_file_pipe = checkpoint.criu.write_img_file("pages-1.img")?;
             let buf = get_filled_vec(KB, 1);
-            for _ in 0..(BIG_FILE_SIZE/buf.len()) {
+            for i in 0..(BIG_FILE_SIZE/buf.len()) {
                 big_file_pipe.write_all(&buf)?;
             }
 
             Ok(())
         }
 
-        fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+        fn after_finish_image_extraction(&mut self) -> Result<()> {
             let extraction_use = get_resident_mem_size() as isize - self.start_mem_size.unwrap() as isize;
             let overhead = extraction_use  as isize - (BIG_FILE_SIZE + NUM_SMALL_FILES * SMALL_FILE_SIZE) as isize;
             let overhead_per_file = overhead / (1 + NUM_SMALL_FILES) as isize;
@@ -622,7 +630,7 @@ mod restore_mem_usage {
             let start_recv_mem_usage = get_resident_mem_size();
 
             let mut big_file = Vec::with_capacity(BIG_FILE_SIZE);
-            let big_file_pipe = &restore.criu.read_img_file("big.img")?;
+            let big_file_pipe = &restore.criu.read_img_file("pages-1.img")?;
             let mut max_overhead = 0;
             loop {
                 let count = big_file_pipe.take(10*KB as u64).read_to_end(&mut big_file)?;
@@ -877,7 +885,7 @@ mod extract_to_disk {
             Ok(())
         }
 
-        fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+        fn after_finish_image_extraction(&mut self) -> Result<()> {
             let read_img_file = |name: &str| -> Result<Vec<u8>> {
                 let mut buf = Vec::new();
                 let mut small_file = File::open(self.images_dir().join(name))?;

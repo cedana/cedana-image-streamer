@@ -404,11 +404,8 @@ fn send_over_chunks(
                 break;
             }
             FileContent::Content(chunk) => {
-                eprintln!("[serve_img] sent a chunk filename: {}", filename);
                 pipe.vmsplice_all(&chunk)?;
-                eprintln!("[serve_img] send_over_chunks trying to release semaphore");
                 semaphore.release(chunk.len() as isize);
-                eprintln!("[serve_img] send_over_chunks released semaphore");
             }
         }
     }
@@ -462,15 +459,11 @@ fn serve_img(
 
     let epoll_capacity = 16;
     loop {
-        eprintln!("[serve_img] hot loop still running");
-        eprintln!("[serve_img] store: {:?}", store.keys().collect::<Vec<_>>());
         // get a chunk from reciever
         if !reciever_eof {
             loop {
-                eprintln!("[serve_img] inside reciever loop");
                 match receiver.try_recv() {
                     Ok((filename, buf)) => {
-                        eprintln!("[serve_img] got a chunk: {}!", &filename);
                         store.entry(filename)
                             .or_default()
                             .push_back(buf);
@@ -481,7 +474,6 @@ fn serve_img(
             }
         }
 
-        eprintln!("[serve_img] handling open_pipes len: {}", open_pipes.len());
         let mut idices_to_remove = vec![];
         for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
              if let Some(chunks) = store.remove(filename.as_str()) {
@@ -497,15 +489,12 @@ fn serve_img(
             open_pipes.remove(i);
         }
 
-        eprintln!("[serve_img] about to poll for new requests");
         let obj = poller.poll(epoll_capacity, EpollTimeout::try_from(2000)?)?;
-        eprintln!("[serve_img] sucessfully polled for a request");
         let Some((_, poll_obj)) = obj else {
             if stopped && open_pipes.len() == 0 {
                 eprintln!("[serve_img] sent everything");
                 break;
             }
-            eprintln!("[serve_img] weird continue");
             continue;
         };
         match poll_obj {
@@ -522,6 +511,10 @@ fn serve_img(
                         eprintln!("[serve_img] stop-listener");
                         stopped = true;
                         poller.remove(listener_key)?;
+                        if open_pipes.is_empty() {
+                            eprintln!("[serve_img] sent everything");
+                            break;
+                        }
                     }
                     // check if filename has a wildcard
                     Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
@@ -565,7 +558,6 @@ fn serve_img(
                                         ensure!(!filenames_of_sent_files.contains(&filename) && !available_files.contains(&filename),
                                             "Client is requesting the image file `{}` multiple times. \
                                             This is not allowed to keep the memory usage low", &filename);
-                                        eprintln!("[serve_img] ensure do not have that file: {}", &filename);
                                         client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                                     }
                                 }
@@ -573,7 +565,6 @@ fn serve_img(
                         }
                     }
                     None => {
-                        eprintln!("[serve_img] doing nothing");
                         // Do nothing.
                     }
                 }
@@ -644,20 +635,17 @@ pub fn serve(images_dir: &Path,
 
     let mut file_sender = image_store::fs_parallel::FileSender::new(sender, small_file_sender, Arc::clone(&semaphore));
 
-    // see drain_shards_into_img_store for context
     let mut shards: Vec<Shard> = shard_pipes.into_iter().map(Shard::new).collect();
+    // see drain_shards_into_img_store for context
     let mut overlayed_img_store = image_store::fs_overlay::Store::new(&mut file_sender);
     for (filename, mut pipe) in ext_file_pipes {
         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
         overlayed_img_store.add_overlay(filename, pipe);
     }
 
-    let mut img_deserializer = ImageDeserializer::new(&mut file_sender, &mut shards);
+    let mut img_deserializer = ImageDeserializer::new(&mut overlayed_img_store, &mut shards);
     let metadata = img_deserializer.drain_small_file_shard()?;
 
-    // TODO: deal with patch_img while serving
-    // patch_img(&mut file_sender, tcp_listen_remaps)?;
-    //
     let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
 
     img_deserializer.drain_all()?;

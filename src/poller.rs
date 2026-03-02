@@ -83,10 +83,8 @@ impl<T> Poller<T> {
             let num_ready_fds = epoll_wait_no_intr(&self.epoll, &mut self.pending_events, timeout)
                 .context("Failed to wait on epoll")?;
 
-            eprintln!("[serve_img] num_ready_fds: {}", num_ready_fds);
             self.pending_events.truncate(num_ready_fds);
             if num_ready_fds == 0 {
-                eprintln!("[serve_img] 0 ready fds");
                 return Ok(None);
             }
 
@@ -106,7 +104,6 @@ pub fn epoll_wait_no_intr(epoll: &Epoll, events: &mut [EpollEvent], timeout: Epo
         match epoll.wait(events, timeout) {
             Err(Errno::EINTR) => continue,
             Ok(0) => {
-                eprintln!("[serve_img] timed out");
                 return Ok(0)
             }
             other => return other,
