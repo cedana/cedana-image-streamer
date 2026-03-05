@@ -13,7 +13,6 @@ use anyhow::{Result};
 pub struct FileSender {
     sender: Option<Sender<(String, FileContent)>>,
     small_file_sender: Option<Sender<(String, FileContent)>>,
-    is_small_file_closed: bool,
     semaphore: Arc<Semaphore>
 }
 
@@ -22,7 +21,6 @@ impl FileSender {
         Self {
             sender: Some(sender),
             small_file_sender: Some(small_file_sender),
-            is_small_file_closed: false,
             semaphore
         }
     }
@@ -45,22 +43,36 @@ impl ImageStore for FileSender {
             Ok(File::new(filename.to_string(), Arc::clone(&self.semaphore), file_sender))
         } else {
             let file_sender = self.sender.as_ref().cloned().unwrap();
-            if !self.is_small_file_closed {
+            // as soon as we start receiving large files
+            // we should've already received all the small files + metadata
+            // therefore we can safely close this sender
+            if self.small_file_sender.is_some() {
                 self.close_small_file_sender();
-                self.is_small_file_closed = true
             }
             Ok(File::new(filename.to_string(), Arc::clone(&self.semaphore), file_sender))
         }
     }
 
-    fn insert(&mut self, filename: impl Into<Box<str>>, _output: Self::File) {
+    fn insert(&mut self, filename: impl Into<Box<str>>, _output: Self::File) -> Result<()> {
         let filename = filename.into();
         if crate::util::is_small_file(&filename) {
-            assert!(self.small_file_sender.is_some());
-            let _ = self.small_file_sender.as_ref().unwrap().send((filename.to_string(), FileContent::Eof));
+            self.small_file_sender
+                .as_ref()
+                .unwrap()
+                .send((filename.to_string(), FileContent::Eof))
+                .map_err(|e| anyhow!("could not insert file: {}", e))?;
         } else {
-            let _ = self.sender.as_ref().unwrap().send((filename.to_string(), FileContent::Eof));
+            // by the time, we are inserting large files we should've
+            // completely drained the small file shard and therefore
+            // closed the small file sender.
+            assert!(self.small_file_sender.is_none());
+            self.sender
+                .as_ref()
+                .unwrap()
+                .send((filename.to_string(), FileContent::Eof))
+                .map_err(|e| anyhow!("could not insert file: {}", e))?;
         }
+        Ok(())
     }
 }
 
@@ -84,14 +96,15 @@ impl File {
 
 impl ImageFile for File {
     fn write_all_from_pipe(&mut self, shard_pipe: &mut UnixPipe, size: usize) -> Result<()> {
-        // TODO: maybe make this configurable?
         let chunk_size = 10*util::MB;
 
         let mut to_send = size;
         while to_send > 0 {
             let size = min(to_send, chunk_size);
-            // we release when we send this data out to client
-            // semaphore enforces our memory limit for us
+            // we need to ensure that we have enough memory to load this
+            // chunk into memory. This semaphore is used to do this enforcing.
+            // When we serve a chunk to Client, we release memory from this
+            // semaphore (take a look at serve_img()).
             self.semaphore.acquire(size as isize);
             let mut chunk = MmapBuf::with_capacity(size);
             chunk.resize(size);

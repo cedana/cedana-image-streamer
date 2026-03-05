@@ -61,7 +61,7 @@ impl ImageStore for Store {
         Ok(File::new_small())
     }
 
-    fn insert(&mut self, filename: impl Into<Box<str>>, file: File) {
+    fn insert(&mut self, filename: impl Into<Box<str>>, file: File) -> Result<()> {
         let filename = filename.into();
         assert!(!self.files.contains_key(&filename), "Image file {} is being overwritten", filename);
 
@@ -70,6 +70,7 @@ impl ImageStore for Store {
         // chunk, but that doesn't really help as we don't touch pages from the unused
         // capacity, which thus remains unallocated.
         self.files.insert(filename, file);
+        Ok(())
     }
 }
 

@@ -37,8 +37,7 @@ use crate::{
     impl_ord_by,
 };
 use anyhow::Result;
-use nix::poll::PollTimeout;
-use nix::sys::epoll::{Epoll, EpollEvent, EpollCreateFlags, EpollTimeout};
+use nix::sys::epoll::EpollTimeout;
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
@@ -168,7 +167,7 @@ impl<'a> ImageSerializer<'a> {
     }
 
     fn write_metadata_to_small_shard(&mut self) -> Result<()> {
-        let mut marker = self.gen_marker(marker::Body::Filename("metadata.json".to_string()), true);
+        let mut marker = self.gen_marker(marker::Body::Filename(METADATA_FILE.to_string()), true);
         self.write_chunk(Chunk { marker, data: None }, true)?;
 
         // we have to directly write metadata instead of call write_chunk because it expects

@@ -23,7 +23,7 @@ use std::{
 
 use crate::{
     criu,
-    image_store::{self, ImageStore, fs_parallel::{self, FileContent}},
+    image_store::fs_parallel::{self, FileContent},
     mmap_buf::MmapBuf,
     util::{pb_read_next, pb_write, read_bytes_next},
 };

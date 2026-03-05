@@ -42,7 +42,7 @@ use crate::{
 };
 use nix::{poll::{PollFd, PollFlags, PollTimeout, poll}, sys::{epoll::EpollFlags, sysinfo::sysinfo}};
 
-use nix::sys::epoll::{Epoll, EpollEvent, EpollCreateFlags, EpollTimeout};
+use nix::sys::epoll::EpollTimeout;
 use anyhow::Result;
 
 // The serialized image is received via multiple data streams (`Shard`). The data streams are
@@ -202,7 +202,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
             Some(FileEof(true)) => {
                 let (filename, img_file) = self.current_img_file.take()
                     .ok_or_else(|| anyhow!("Unexpected FileEof marker"))?;
-                self.img_store.insert(filename, img_file);
+                self.img_store.insert(filename, img_file)?;
             }
             Some(ImageEof(true)) => {
                 self.mark_image_eof()?;
@@ -318,7 +318,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 let (filename, img_file) = self.current_img_file.as_mut()
                     .ok_or_else(|| anyhow!("Unexpected FileData marker"))?;
 
-                if filename.as_ref() == "metadata.json" {
+                if filename.as_ref() == util::METADATA_FILE {
                     // there is never going to be more than one chunk of FileData for metadata
                     let mut metadata_bytes = Vec::with_capacity(size as usize);
                     let pipe = &mut self.small_file_shard.pipe;
@@ -333,8 +333,8 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 let (filename, img_file) = self.current_img_file.take()
                     .ok_or_else(|| anyhow!("Unexpected FileEof marker"))?;
 
-                if filename.as_ref() != "metadata.json" {
-                    self.img_store.insert(filename, img_file);
+                if filename.as_ref() != util::METADATA_FILE {
+                    self.img_store.insert(filename, img_file)?;
                 }
             }
             _ => bail!("Malformed image marker"),
@@ -396,6 +396,7 @@ fn send_over_chunks(
     semaphore: &Arc<Semaphore>
 ) -> Result<bool> {
     let mut res = false;
+    eprintln!("sending over chunks for: {}", filename);
     while let Some(file_content) = chunks.pop_front() {
         match file_content {
             FileContent::Eof => {
@@ -430,7 +431,7 @@ fn serve_img(
             .or_default()
             .push_back(buf);
     }
-    eprintln!("[serve_img] read small files in store: {:?}", store.keys().into_iter().collect::<Vec<_>>());
+    eprintln!("read small files into store: {:?}", store.keys().collect::<Vec<_>>());
 
     if !tcp_listen_remaps.is_empty() {
         if let Some(files_img) = store.remove("files.img") {
@@ -474,25 +475,25 @@ fn serve_img(
             }
         }
 
-        let mut idices_to_remove = vec![];
+        let mut finished = vec![];
         for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
              if let Some(chunks) = store.remove(filename.as_str()) {
-                eprintln!("[serve_img] open_pipe: {} sending over chunks", filename);
-                 let sent_all = send_over_chunks(&filename, chunks, pipe, &semaphore)?;
+                 let sent_all = send_over_chunks(filename, chunks, pipe, &semaphore)?;
                  if sent_all {
-                     idices_to_remove.push(i);
+                     finished.push(i);
                  }
              }
         }
 
-        for i in idices_to_remove.into_iter().rev() {
+        // remove all files we have completely sent over
+        for i in finished.into_iter().rev() {
             open_pipes.remove(i);
         }
 
         let obj = poller.poll(epoll_capacity, EpollTimeout::try_from(2000)?)?;
         let Some((_, poll_obj)) = obj else {
-            if stopped && open_pipes.len() == 0 {
-                eprintln!("[serve_img] sent everything");
+            if stopped && open_pipes.is_empty() {
+                eprintln!("sent over all files.");
                 break;
             }
             continue;
@@ -500,7 +501,6 @@ fn serve_img(
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;
-                eprintln!("[serve_img] accepted new connection");
                 poller.add(conn.as_raw_fd(), PollType::Client(conn), EpollFlags::EPOLLIN)?;
             }
             PollType::Client(client) => {
@@ -508,11 +508,10 @@ fn serve_img(
                     Some(ref filename) if filename == "stop-listener" => {
                         // Stop accepting any new connections. Pending files will still be
                         // processed.
-                        eprintln!("[serve_img] stop-listener");
                         stopped = true;
                         poller.remove(listener_key)?;
                         if open_pipes.is_empty() {
-                            eprintln!("[serve_img] sent everything");
+                            eprintln!("sent over all files.");
                             break;
                         }
                     }
@@ -520,27 +519,25 @@ fn serve_img(
                     Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
                         // List all files in the image store.
                         let res = util::filter_files(&file_list, pattern);
-                        eprintln!("[serve_img] got a file list request pattern {}", pattern);
+                        eprintln!("got a file list request result: {:?}", res);
                         client.send_file_list_reply(res)?;
                     }
                     Some(filename) => {
                         if !available_files.contains(&filename) {
-                            eprintln!("[serve_img] do not have: {}", &filename);
+                            eprintln!("file: {} not found", &filename);
                             client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                         } else {
-                            eprintln!("[serve_img] got a file request {}", &filename);
+                            eprintln!("file request {}", &filename);
                             match store.remove(&filename) {
                                 Some(chunks) => {
                                     // we should not get anymore requests for the file
                                     filenames_of_sent_files.insert(filename.clone());
                                     client.send_file_reply(true, Some(FileStatus::Ready))?; // true means that the file exists.
                                     let mut pipe = client.recv_pipe()?;
-                                    eprintln!("[serve_img] recieved a pipe from client: {}", &filename);
                                     // Try setting the pipe capacity. Failing is okay.
                                     let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
                                     // send as much data as we have available right now and then
                                     // add it to the list of fds we have that are open
-                                    eprintln!("[serve_img] sending over available chunks: {}", &filename);
                                     let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
                                     if !res {
                                         open_pipes.push((filename, pipe));
@@ -548,7 +545,7 @@ fn serve_img(
                                 }
                                 None => {
                                     if available_files.contains(&filename) && !filenames_of_sent_files.contains(&filename) {
-                                        eprintln!("[serve_img] file not ready: {}", &filename);
+                                        eprintln!("file: {} not ready", &filename);
                                         client.send_file_reply(true, Some(FileStatus::NotReady))?;
                                     } else {
                                         // If we keep the image file in our process, Client will also
@@ -645,12 +642,10 @@ pub fn serve(images_dir: &Path,
 
     let mut img_deserializer = ImageDeserializer::new(&mut overlayed_img_store, &mut shards);
     let metadata = img_deserializer.drain_small_file_shard()?;
-
     let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
-
     img_deserializer.drain_all()?;
     file_sender.close_sender();
-    let _ = handle.join();
+    handle.join().map_err(|e| anyhow!("could not serve files: {:?}", e))??;
     Ok(())
 }
 
