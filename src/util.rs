@@ -126,6 +126,14 @@ pub fn is_small_file(filename: &str) -> bool {
         return true;
     }
 
+    if filename == "rw-layer.manifest" {
+        return true;
+    }
+
+    if filename == "runc.netns_eth0_ipv4addr" {
+        return true;
+    }
+
     // gpu files
     if !filename.ends_with(".img") {
         // noctx cuda calls are dumped later, but
@@ -142,6 +150,11 @@ pub fn is_small_file(filename: &str) -> bool {
         if filename.contains("size") {
             return true;
         }
+        return false;
+    }
+
+    let rw_layer_re = Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap();
+    if rw_layer_re.is_match(filename) {
         return false;
     }
 
