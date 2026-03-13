@@ -991,16 +991,16 @@ mod memory_limit {
             files.insert("rw-layer.manifest".to_string(), get_rand_vec(10*KB));
             files.insert("runc.netns_eth0_ipv4addr".to_string(), get_rand_vec(10*KB));
             files.insert("files.img".to_string(), get_rand_vec(10*KB));
-            files.insert("gpu-ctx-cuda-calls".to_string(), get_rand_vec(10*MB));
-            files.insert("gpu-ctx-cuda-calls-size".to_string(), get_rand_vec(10*KB));
+            files.insert("gpu-ctx-calls".to_string(), get_rand_vec(10*MB));
+            files.insert("gpu-ctx-calls-size".to_string(), get_rand_vec(10*KB));
             files.insert("xyz.img".to_string(), get_rand_vec(10*KB));
             files.insert("pages-1.img".to_string(), get_rand_vec(10*MB));
             files.insert("pages-2.img".to_string(), get_rand_vec(10*MB));
             files.insert("ghost-files-1.img".to_string(), get_rand_vec(10*MB));
-            files.insert("gpu-mem".to_string(), get_rand_vec(10*MB));
-            files.insert("gpu-mem-size".to_string(), get_rand_vec(10*KB));
-            files.insert("gpu-noctx-cuda-calls".to_string(), get_rand_vec(50*KB));
-            files.insert("gpu-noctx-cuda-calls-size".to_string(), get_rand_vec(10*KB));
+            files.insert("gpu-mem-1-2".to_string(), get_rand_vec(10*MB));
+            files.insert("gpu-mem-1-2-size".to_string(), get_rand_vec(10*KB));
+            files.insert("gpu-noctx-calls".to_string(), get_rand_vec(50*KB));
+            files.insert("gpu-noctx-calls-size".to_string(), get_rand_vec(10*KB));
             files.insert("inventory.img".to_string(), get_rand_vec(10*KB));
             Self { _temp_dir: temp_dir, images_dir, files }
         }
@@ -1020,12 +1020,12 @@ mod memory_limit {
             // 4. runc.netns_eth0_ipv4addr
             // === the actual dump starts (parallel) ===
             // CRIU                |  CEDANA-GPU
-            // files.img           |  gpu-ctx-cuda-calls
-            // lot's of tiny *.img |  gpu-ctx-cuda-calls-size
+            // files.img           |  gpu-ctx-calls
+            // lot's of tiny *.img |  gpu-ctx-calls-size
             // pages-*.img         |  memory stuff
             // core-*.img          |  gpu-mem-size
-            // inventory.img       |  gpu-no-ctx-cuda-calls
-            //                     |  gpu-no-ctx-cuda-calls-size
+            // inventory.img       |  gpu-no-ctx-calls
+            //                     |  gpu-no-ctx-calls-size
             // this is a rough order
             checkpoint.criu.write_img_file("process_state.json")?
                 .write_all(&self.files.get("process_state.json").unwrap())?;
@@ -1048,11 +1048,11 @@ mod memory_limit {
             checkpoint.criu.write_img_file("files.img")?
                 .write_all(&self.files.get("files.img").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-ctx-cuda-calls")?
-                .write_all(&self.files.get("gpu-ctx-cuda-calls").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-ctx-calls")?
+                .write_all(&self.files.get("gpu-ctx-calls").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-ctx-cuda-calls-size")?
-                .write_all(&self.files.get("gpu-ctx-cuda-calls-size").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-ctx-calls-size")?
+                .write_all(&self.files.get("gpu-ctx-calls-size").unwrap())?;
 
             checkpoint.criu.write_img_file("xyz.img")?
                 .write_all(&self.files.get("xyz.img").unwrap())?;
@@ -1066,17 +1066,17 @@ mod memory_limit {
             checkpoint.criu.write_img_file("ghost-files-1.img")?
                 .write_all(&self.files.get("ghost-files-1.img").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-mem")?
-                .write_all(&self.files.get("gpu-mem").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-mem-1-2")?
+                .write_all(&self.files.get("gpu-mem-1-2").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-mem-size")?
-                .write_all(&self.files.get("gpu-mem-size").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-mem-1-2-size")?
+                .write_all(&self.files.get("gpu-mem-1-2-size").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-noctx-cuda-calls")?
-                .write_all(&self.files.get("gpu-noctx-cuda-calls").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-noctx-calls")?
+                .write_all(&self.files.get("gpu-noctx-calls").unwrap())?;
 
-            checkpoint.criu.write_img_file("gpu-noctx-cuda-calls-size")?
-                .write_all(&self.files.get("gpu-noctx-cuda-calls-size").unwrap())?;
+            checkpoint.criu.write_img_file("gpu-noctx-calls-size")?
+                .write_all(&self.files.get("gpu-noctx-calls-size").unwrap())?;
 
             checkpoint.criu.write_img_file("inventory.img")?
                 .write_all(&self.files.get("inventory.img").unwrap())?;
@@ -1103,15 +1103,15 @@ mod memory_limit {
             assert!(read_img_file("inventory.img")? == *self.files.get("inventory.img").unwrap());
             assert!(read_img_file("xyz.img")? == *self.files.get("xyz.img").unwrap());
             assert!(read_img_file("files.img")? == *self.files.get("files.img").unwrap());
-            assert!(read_img_file("gpu-noctx-cuda-calls-size")? == *self.files.get("gpu-noctx-cuda-calls-size").unwrap());
-            assert!(read_img_file("gpu-noctx-cuda-calls")? == *self.files.get("gpu-noctx-cuda-calls").unwrap());
-            assert!(read_img_file("gpu-ctx-cuda-calls-size")? == *self.files.get("gpu-ctx-cuda-calls-size").unwrap());
-            assert!(read_img_file("gpu-ctx-cuda-calls")? == *self.files.get("gpu-ctx-cuda-calls").unwrap());
+            assert!(read_img_file("gpu-noctx-calls-size")? == *self.files.get("gpu-noctx-calls-size").unwrap());
+            assert!(read_img_file("gpu-noctx-calls")? == *self.files.get("gpu-noctx-calls").unwrap());
+            assert!(read_img_file("gpu-ctx-calls-size")? == *self.files.get("gpu-ctx-calls-size").unwrap());
+            assert!(read_img_file("gpu-ctx-calls")? == *self.files.get("gpu-ctx-calls").unwrap());
             assert!(read_img_file("pages-1.img")? == *self.files.get("pages-1.img").unwrap());
             assert!(read_img_file("pages-2.img")? == *self.files.get("pages-2.img").unwrap());
             assert!(read_img_file("ghost-files-1.img")? == *self.files.get("ghost-files-1.img").unwrap());
-            assert!(read_img_file("gpu-mem-size")? == *self.files.get("gpu-mem-size").unwrap());
-            assert!(read_img_file("gpu-mem")? == *self.files.get("gpu-mem").unwrap());
+            assert!(read_img_file("gpu-mem-1-2-size")? == *self.files.get("gpu-mem-1-2-size").unwrap());
+            assert!(read_img_file("gpu-mem-1-2")? == *self.files.get("gpu-mem-1-2").unwrap());
             Ok(())
         }
     }

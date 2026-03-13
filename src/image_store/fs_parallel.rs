@@ -29,7 +29,8 @@ impl FileSender {
         self.small_file_sender = None;
     }
 
-    pub fn close_sender(&mut self) {
+    pub fn close_senders(&mut self) {
+        self.small_file_sender = None;
         self.sender = None;
     }
 }
@@ -85,12 +86,14 @@ pub enum FileContent {
 pub struct File {
     filename: String,
     semaphore: Arc<Semaphore>,
-    sender: Sender<(String, FileContent)>
+    sender: Sender<(String, FileContent)>,
+    is_small: bool
 }
 
 impl File {
     fn new(filename: String, semaphore: Arc<Semaphore>, sender: Sender<(String, FileContent)>) -> Self {
-        Self { filename, semaphore, sender }
+        let is_small = util::is_small_file(&filename);
+        Self { filename, semaphore, sender, is_small }
     }
 }
 
@@ -105,7 +108,10 @@ impl ImageFile for File {
             // chunk into memory. This semaphore is used to do this enforcing.
             // When we serve a chunk to Client, we release memory from this
             // semaphore (take a look at serve_img()).
-            self.semaphore.acquire(size as isize);
+            // we only do this enforcing for large files.
+            if !self.is_small {
+                self.semaphore.acquire(size as isize);
+            }
             let mut chunk = MmapBuf::with_capacity(size);
             chunk.resize(size);
             shard_pipe.read_exact(&mut chunk)?;

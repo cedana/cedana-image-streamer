@@ -117,64 +117,27 @@ pub fn create_dir_all(dir: &Path) -> Result<()> {
 }
 
 pub fn is_small_file(filename: &str) -> bool {
-    // This is the file created by the daemon. It is
-    // created before the dumps of CRIU & cedana-gpu.
-    // And is needed before the restore for CRIU & cedana-gpu
-    // starts. It is essential that is we have it available
-    // as soon as possible.
-    if filename == "process_state.json" {
-        return true;
+    match filename {
+        // small files
+        "process_state.json" => true,
+        "rw-layer.manifest" => true,
+        "runc.netns_eth0_ipv4addr" => true,
+        file if file.contains("gpu") && file.contains("size") => true,
+        file if file.starts_with("gpu-noctx-calls-") => true,
+        // large files
+        file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^pages-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if file.starts_with("gpu-calls-") => false,
+        file if file.starts_with("gpu-mem-") => false,
+        file if file.starts_with("gpu-ctx-") => false,
+        file if file.starts_with("gpu-hostmem-") => false,
+        file if file.starts_with("gpu-ctxshm-") => false,
+        file if file.starts_with("gpu-virtmem-") => false,
+        file if file.starts_with("gpu-envvars-") => false,
+        // anything else is treated as small
+        _ => true
     }
-
-    if filename == "rw-layer.manifest" {
-        return true;
-    }
-
-    if filename == "runc.netns_eth0_ipv4addr" {
-        return true;
-    }
-
-    // gpu files
-    if !filename.ends_with(".img") {
-        // noctx cuda calls are dumped later, but
-        // restored first. So, it is important
-        // we have them as part of small files.
-        if filename.contains("noctx") {
-            return true;
-        }
-
-        // each gpu file creates a corresponding size file
-        // cedana-gpu dumps the file then its size.
-        // But asks for the size then the file during restore.
-        // So, it is critical these are available first.
-        if filename.contains("size") {
-            return true;
-        }
-        return false;
-    }
-
-    let rw_layer_re = Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap();
-    if rw_layer_re.is_match(filename) {
-        return false;
-    }
-
-    // we treat all file another than pages-*.img &
-    // ghost-files-*.img as small files.
-    // Because, pages-*.img include the pagemaps of
-    // the process (which are huge) and ghost-files-*.img
-    // contains the content of a deleted file which can
-    // be arbitrarily large.
-    let pages_re = Regex::new(r"^pages-[0-9]+\.img$").unwrap();
-    if pages_re.is_match(filename) {
-        return false;
-    }
-
-    let ghost_file_re = Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap();
-    if ghost_file_re.is_match(filename) {
-        return false;
-    }
-
-    true
 }
 
 pub fn filter_files(files: &[String], pattern: &str) -> Vec<String> {

@@ -406,7 +406,9 @@ fn send_over_chunks(
             }
             FileContent::Content(chunk) => {
                 pipe.vmsplice_all(&chunk)?;
-                semaphore.release(chunk.len() as isize);
+                if !util::is_small_file(filename) {
+                    semaphore.release(chunk.len() as isize);
+                }
             }
         }
     }
@@ -644,7 +646,7 @@ pub fn serve(images_dir: &Path,
     let metadata = img_deserializer.drain_small_file_shard()?;
     let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
     img_deserializer.drain_all()?;
-    file_sender.close_sender();
+    file_sender.close_senders();
     handle.join().map_err(|e| anyhow!("could not serve files: {:?}", e))??;
     Ok(())
 }
