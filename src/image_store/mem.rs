@@ -52,47 +52,6 @@ impl Store {
     pub fn remove(&mut self, filename: &str) -> Option<File> {
         self.files.remove(filename)
     }
-
-    pub fn list(&self, pattern: &str) -> Vec<String> {
-        if pattern.is_empty() {
-            // If the pattern is empty, return all files
-            return self.files.keys().map(|filename| filename.to_string()).collect();
-        }
-
-        // Convert glob pattern to regex pattern
-        // Escape regex special characters first, then convert glob wildcards
-        let mut regex_pattern = String::new();
-        regex_pattern.push('^'); // Match from start of string
-
-        for ch in pattern.chars() {
-            match ch {
-                '*' => regex_pattern.push_str(".*"),  // * matches any characters
-                '?' => regex_pattern.push('.'),       // ? matches any single character
-                // Escape regex special characters
-                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                    regex_pattern.push('\\');
-                    regex_pattern.push(ch);
-                }
-                // Regular characters pass through
-                _ => regex_pattern.push(ch),
-            }
-        }
-
-        regex_pattern.push('$'); // Match to end of string
-
-        // do a regular expression match
-        let re = regex::Regex::new(&regex_pattern);
-        match re {
-            Ok(re) => self.files.keys()
-                .filter(|&filename| re.is_match(filename))
-                .map(|filename| filename.to_string())
-                .collect(),
-            Err(_) => {
-                // If the regex is invalid, return an empty list
-                vec![]
-            }
-        }
-    }
 }
 
 impl ImageStore for Store {
@@ -102,7 +61,7 @@ impl ImageStore for Store {
         Ok(File::new_small())
     }
 
-    fn insert(&mut self, filename: impl Into<Box<str>>, file: File) {
+    fn insert(&mut self, filename: impl Into<Box<str>>, file: File) -> Result<()> {
         let filename = filename.into();
         assert!(!self.files.contains_key(&filename), "Image file {} is being overwritten", filename);
 
@@ -111,6 +70,7 @@ impl ImageStore for Store {
         // chunk, but that doesn't really help as we don't touch pages from the unused
         // capacity, which thus remains unallocated.
         self.files.insert(filename, file);
+        Ok(())
     }
 }
 
@@ -121,6 +81,7 @@ pub enum File {
 
 use File::*;
 
+unsafe impl Send for File {}
 impl File {
     pub fn new_small() -> Self {
         Small(Vec::new())

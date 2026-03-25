@@ -13,6 +13,7 @@
 //  limitations under the License.
 
 use prost::Message;
+use regex::Regex;
 use std::{
     mem::size_of,
     os::unix::net::UnixStream,
@@ -32,6 +33,7 @@ use anyhow::{Result, Context};
 pub const KB: usize = 1024;
 pub const MB: usize = 1024*1024;
 pub const EOF_ERR_MSG: &str = "EOF unexpectedly reached";
+pub const METADATA_FILE: &str = "metadata.json";
 
 lazy_static::lazy_static! {
     pub static ref PAGE_SIZE: usize = sysconf(SysconfVar::PAGE_SIZE)
@@ -112,6 +114,72 @@ pub fn emit_progress(progress_pipe: &mut fs::File, msg: &str) {
 pub fn create_dir_all(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("Failed to create directory {}", dir.display()))
+}
+
+pub fn is_small_file(filename: &str) -> bool {
+    match filename {
+        // small files
+        "process_state.json" => true,
+        "rw-layer.manifest" => true,
+        "runc.netns_eth0_ipv4addr" => true,
+        file if file.contains("gpu") && file.contains("size") => true,
+        file if file.starts_with("gpu-noctx-calls-") => true,
+        // large files
+        file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^pages-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^tcp-stream-.*\.img$").unwrap().is_match(file) => false,
+        file if file.starts_with("gpu-calls-") => false,
+        file if file.starts_with("gpu-mem-") => false,
+        file if file.starts_with("gpu-ctx-") => false,
+        file if file.starts_with("gpu-hostmem-") => false,
+        file if file.starts_with("gpu-ctxshm-") => false,
+        file if file.starts_with("gpu-virtmem-") => false,
+        file if file.starts_with("gpu-envvars-") => false,
+        // anything else is treated as small
+        _ => true
+    }
+}
+
+pub fn filter_files(files: &[String], pattern: &str) -> Vec<String> {
+    if pattern.is_empty() {
+        // If the pattern is empty, return all files
+        return files.to_owned();
+    }
+
+    // Convert glob pattern to regex pattern
+    // Escape regex special characters first, then convert glob wildcards
+    let mut regex_pattern = String::new();
+    regex_pattern.push('^'); // Match from start of string
+
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex_pattern.push_str(".*"),  // * matches any characters
+            '?' => regex_pattern.push('.'),       // ? matches any single character
+            // Escape regex special characters
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex_pattern.push('\\');
+                regex_pattern.push(ch);
+            }
+            // Regular characters pass through
+            _ => regex_pattern.push(ch),
+        }
+    }
+
+    regex_pattern.push('$'); // Match to end of string
+
+    // do a regular expression match
+    let re = regex::Regex::new(&regex_pattern);
+    match re {
+        Ok(re) => files.to_owned().iter()
+            .filter(|&filename| re.is_match(filename))
+            .map(|filename| filename.to_string())
+            .collect(),
+        Err(_) => {
+            // If the regex is invalid, return an empty list
+            vec![]
+        }
+    }
 }
 
 #[derive(Serialize)]

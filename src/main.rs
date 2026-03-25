@@ -103,6 +103,11 @@ struct Opts {
     #[structopt(long, parse(try_from_str=parse_port_remap), require_delimiter = true)]
     tcp_listen_remap: Vec<(u16, u16)>,
 
+    /// The amount of memory (in MB) streamer is allowed to use while serving image files during
+    /// restore. If not specified streamer will use as much memory as available.
+    #[structopt(short = "M", long)]
+    memory_limit: Option<usize>,
+
     #[structopt(subcommand)]
     operation: Operation,
 }
@@ -139,15 +144,11 @@ fn do_main() -> Result<()> {
         unsafe { fs::File::from_raw_fd(progress_fd) }
     };
 
-    let shard_pipes =
-        if !opts.shard_fds.is_empty() {
-            opts.shard_fds
-        } else {
-            match opts.operation {
-                Capture => vec![dup_raw(libc::STDOUT_FILENO)?],
-                Extract | Serve => vec![dup_raw(libc::STDIN_FILENO)?],
-            }
-        }.into_iter()
+    ensure!(opts.shard_fds.len() >= 2,
+            "streamer requires atleast two shard fds");
+
+    let shard_pipes = opts.shard_fds
+            .into_iter()
             .map(UnixPipe::new)
             .collect::<Result<_>>()
             .context("Image shards (input/output) must be pipes. \
@@ -160,10 +161,13 @@ fn do_main() -> Result<()> {
     ensure!(opts.operation == Serve || opts.tcp_listen_remap.is_empty(),
             "--tcp-listen-remap is only supported when serving the image");
 
+    ensure!(opts.operation == Serve || opts.memory_limit.is_none(),
+            "--memory-limit is only supported when serving the image");
+
     match opts.operation {
         Capture => capture(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
         Extract => extract(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes),
-        Serve   =>   serve(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes, opts.tcp_listen_remap),
+        Serve   =>   serve(&opts.images_dir, progress_pipe, shard_pipes, ext_file_pipes, opts.tcp_listen_remap, opts.memory_limit),
     }
 }
 
@@ -188,6 +192,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -201,6 +206,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Extract,
+                memory_limit: None
             })
     }
 
@@ -214,6 +220,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Serve,
+                memory_limit: None
             })
     }
 
@@ -228,6 +235,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -241,6 +249,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: None,
                 operation: Operation::Capture,
+                memory_limit: None
             })
     }
 
@@ -254,6 +263,7 @@ mod cli_tests {
                 tcp_listen_remap: vec![(2000,3000),(5000,6000)],
                 progress_fd: None,
                 operation: Operation::Serve,
+                memory_limit: None
             })
     }
 
@@ -267,6 +277,21 @@ mod cli_tests {
                 tcp_listen_remap: vec![],
                 progress_fd: Some(3),
                 operation: Operation::Capture,
+                memory_limit: None
+            })
+    }
+
+    #[test]
+    fn test_memory_limit() {
+        assert_eq!(Opts::from_iter(&vec!["prog", "--images-dir", "imgdir", "--memory-limit", "500", "serve"]),
+            Opts {
+                images_dir: PathBuf::from("imgdir"),
+                shard_fds: vec![],
+                ext_file_fds: vec![],
+                tcp_listen_remap: vec![],
+                progress_fd: None,
+                operation: Operation::Serve,
+                memory_limit: Some(500)
             })
     }
 }

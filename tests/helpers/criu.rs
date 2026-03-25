@@ -42,9 +42,26 @@ impl Criu {
         Ok(Self { socket })
     }
 
-    fn read_file_reply(&mut self) -> Result<bool> {
+    fn read_file_reply(&mut self) -> Result<criu::FileStatus> {
         let reply: criu::ImgStreamerReplyEntry = pb_read(&mut self.socket)?;
-        Ok(reply.exists)
+        match reply.status {
+            None => {
+                if reply.exists {
+                    Ok(criu::FileStatus::Ready)
+                } else {
+                    Ok(criu::FileStatus::DoesNotExist)
+                }
+            },
+            Some(status) => {
+                if status == 0 {
+                    Ok(criu::FileStatus::DoesNotExist)
+                } else if status == 1 {
+                    Ok(criu::FileStatus::NotReady)
+                } else {
+                    Ok(criu::FileStatus::Ready)
+                }
+            }
+        }
     }
 
     pub fn finish(&mut self) -> Result<()> {
@@ -63,15 +80,23 @@ impl Criu {
     }
 
     pub fn maybe_read_img_file(&mut self, filename: &str) -> Result<Option<UnixPipe>> {
-        let filename = filename.to_string();
-        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename })?;
+        let file = filename.to_string();
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: file })?;
 
-        if self.read_file_reply()? {
-            let (pipe_r, pipe_w) = new_pipe();
-            send_fd(&mut self.socket, pipe_w.as_raw_fd())?;
-            Ok(Some(pipe_r))
-        } else {
-            Ok(None)
+        let status = self.read_file_reply()?;
+
+        match status {
+            criu::FileStatus::DoesNotExist => {
+                Ok(None)
+            }
+            criu::FileStatus::Ready => {
+                let (pipe_r, pipe_w) = new_pipe();
+                send_fd(&mut self.socket, pipe_w.as_raw_fd())?;
+                Ok(Some(pipe_r))
+            }
+            criu::FileStatus::NotReady => {
+                self.maybe_read_img_file(filename)
+            }
         }
     }
 

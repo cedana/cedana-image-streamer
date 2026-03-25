@@ -27,9 +27,10 @@ mod helpers;
 
 use std::{
     path::PathBuf,
-    io::{Read, Write, BufReader},
-    cmp::{min, max},
+    io::{self, BufReader, Read, Write},
+    cmp::{max, min},
     thread,
+    fs::File
 };
 use tempfile::TempDir;
 use cedana_image_streamer::{
@@ -37,6 +38,7 @@ use cedana_image_streamer::{
     capture::capture,
     extract::{extract, serve},
     util::{KB, MB, PAGE_SIZE},
+    image
 };
 use crate::helpers::{
     criu::Criu,
@@ -51,6 +53,7 @@ use anyhow::Result;
 struct StreamerCheckpointContext {
     progress: BufReader<UnixPipe>,
     capture_thread: thread::JoinHandle<()>,
+    file_threads: Vec<thread::JoinHandle<()>>
 }
 
 struct CheckpointContext {
@@ -60,10 +63,12 @@ struct CheckpointContext {
 
 struct StreamerRestoreContext {
     progress: BufReader<UnixPipe>,
+    extract_thread: thread::JoinHandle<()>,
+    file_threads: Vec<thread::JoinHandle<()>>
 }
 
 struct RestoreContext {
-    _streamer: StreamerRestoreContext,
+    streamer: StreamerRestoreContext,
     criu: Criu,
 }
 
@@ -74,6 +79,7 @@ trait TestImpl {
     fn extract_ext_files(&mut self) -> Vec<(String, UnixPipe)> { Vec::new() }
     fn serve_image(&mut self) -> bool { true }
     fn has_checkpoint_started(&mut self) -> bool { true } // should be true if send_img_files() has sent a file.
+    fn memory_limit(&self) -> Option<usize> { None }
 
     fn shards(&mut self)-> Vec<(UnixPipe, UnixPipe)> {
         (0..self.num_shards())
@@ -81,15 +87,56 @@ trait TestImpl {
             .collect()
     }
 
-    fn bootstrap(&mut self) -> Result<(StreamerCheckpointContext, StreamerRestoreContext)> {
-        let (capture_progress_r, capture_progress_w) = new_pipe();
+    fn bootstrap_restore(&mut self) -> Result<StreamerRestoreContext> {
         let (extract_progress_r, extract_progress_w) = new_pipe();
-
-        let capture_progress = BufReader::new(capture_progress_r);
         let extract_progress = BufReader::new(extract_progress_r);
 
         let (shard_pipes_r, shard_pipes_w): (Vec<UnixPipe>, Vec<UnixPipe>) =
             self.shards().drain(..).unzip();
+
+        let images_dir = self.images_dir();
+        let ext_files = self.extract_ext_files();
+        let serve_image = self.serve_image();
+        let memory_limit = self.memory_limit();
+
+        let extract_thread = thread::spawn(move || {
+            if serve_image {
+                serve(&images_dir, extract_progress_w, shard_pipes_r, ext_files, vec![], memory_limit)
+                    .expect("serve() failed");
+            } else {
+                extract(&images_dir, extract_progress_w, shard_pipes_r, ext_files)
+                    .expect("extract() failed");
+            }
+        });
+
+        let mut file_threads = vec![];
+        for (i, mut shard_pipe)  in shard_pipes_w.into_iter().enumerate() {
+            let images_dir = self.images_dir();
+            file_threads.push(
+                thread::spawn(move || {
+                    let mut path = images_dir.clone();
+                    path.push(format!("img-{i}"));
+                    let mut file = File::open(path).expect("could not open file");
+                    io::copy(&mut file, &mut shard_pipe).expect("could not write to file");
+                })
+            );
+        }
+
+        Ok(
+            StreamerRestoreContext {
+                progress: extract_progress,
+                extract_thread,
+                file_threads,
+            }
+        )
+    }
+
+    fn bootstrap_capture(&mut self) -> Result<StreamerCheckpointContext> {
+        let (capture_progress_r, capture_progress_w) = new_pipe();
+        let (shard_pipes_r, shard_pipes_w): (Vec<UnixPipe>, Vec<UnixPipe>) =
+            self.shards().drain(..).unzip();
+
+        let capture_progress = BufReader::new(capture_progress_r);
 
         let capture_thread = {
             let images_dir = self.images_dir();
@@ -101,31 +148,26 @@ trait TestImpl {
             })
         };
 
-        {
+        let mut file_threads = vec![];
+        for (i, mut shard_pipe) in shard_pipes_r.into_iter().enumerate() {
             let images_dir = self.images_dir();
-            let ext_files = self.extract_ext_files();
-            let serve_image = self.serve_image();
+            file_threads.push(
+                thread::spawn(move || {
+                    let mut path = images_dir.clone();
+                    path.push(format!("img-{i}"));
+                    let mut file = File::create(path).expect("could not create file");
+                    io::copy(&mut shard_pipe, &mut file).expect("could not write to file");
+                })
+            );
+        }
 
-            thread::spawn(move || {
-                if serve_image {
-                    serve(&images_dir, extract_progress_w, shard_pipes_r, ext_files, vec![])
-                        .expect("serve() failed");
-                } else {
-                    extract(&images_dir, extract_progress_w, shard_pipes_r, ext_files)
-                        .expect("extract() failed");
-                }
-            })
-        };
-
-        Ok((
-                StreamerCheckpointContext {
-                    progress: capture_progress,
-                    capture_thread,
-                },
-                StreamerRestoreContext {
-                    progress: extract_progress,
-                }
-        ))
+        Ok(
+            StreamerCheckpointContext {
+                progress: capture_progress,
+                capture_thread,
+                file_threads
+            },
+        )
     }
 
     fn criu_checkpoint_connect(&mut self, mut checkpoint: StreamerCheckpointContext)
@@ -152,6 +194,9 @@ trait TestImpl {
         checkpoint.criu.finish()?;
         let stats: Stats = read_stats(&mut checkpoint.streamer.progress)?;
         checkpoint.streamer.capture_thread.join().unwrap();
+        for thread in checkpoint.streamer.file_threads {
+            thread.join().unwrap();
+        }
         Ok(stats)
     }
 
@@ -159,11 +204,11 @@ trait TestImpl {
         Ok(())
     }
 
-    fn finish_image_extraction(&mut self, restore: &mut StreamerRestoreContext) -> Result<Stats> {
-        read_stats(&mut restore.progress)
+    fn finish_image_extraction(&mut self, restore: &mut StreamerRestoreContext) -> Result<()> {
+        Ok(())
     }
 
-    fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+    fn after_finish_image_extraction(&mut self) -> Result<()> {
         Ok(())
     }
 
@@ -173,7 +218,7 @@ trait TestImpl {
         // The image can be served now. Wait for the CRIU socket to be ready.
         assert_eq!(read_line(&mut restore.progress)?, "socket-init");
         let criu = Criu::connect(self.images_dir().join("streamer-serve.sock"))?;
-        Ok(RestoreContext { _streamer: restore, criu })
+        Ok(RestoreContext { streamer: restore, criu })
     }
 
     fn recv_img_files(&mut self, _restore: &mut RestoreContext) -> Result<()> {
@@ -182,11 +227,23 @@ trait TestImpl {
 
     fn finish_restore(&mut self, mut restore: RestoreContext) -> Result<()> {
         restore.criu.finish()?;
+        restore.streamer.extract_thread.join().unwrap();
+        for thread in restore.streamer.file_threads {
+            thread.join().unwrap();
+        }
+        Ok(())
+    }
+
+    fn finish_extract(&mut self, restore: StreamerRestoreContext) -> Result<()> {
+        restore.extract_thread.join().unwrap();
+        for thread in restore.file_threads {
+            thread.join().unwrap();
+        }
         Ok(())
     }
 
     fn run(&mut self) -> Result<()> {
-        let (checkpoint, mut restore) = self.bootstrap()?;
+        let checkpoint = self.bootstrap_capture()?;
 
         let mut checkpoint = self.criu_checkpoint_connect(checkpoint)?;
         self.send_img_files(&mut checkpoint)?;
@@ -194,15 +251,18 @@ trait TestImpl {
         let stats = self.finish_checkpoint(checkpoint)?;
         self.after_finish_checkpoint(&stats)?;
 
-        let stats = self.finish_image_extraction(&mut restore)?;
-        self.after_finish_image_extraction(&stats)?;
+        let mut restore = self.bootstrap_restore()?;
+        self.finish_image_extraction(&mut restore)?;
 
         if self.serve_image() {
             let mut restore = self.criu_restore_connect(restore)?;
             self.recv_img_files(&mut restore)?;
             self.finish_restore(restore)?;
+        } else {
+            self.finish_extract(restore)?;
         }
 
+        self.after_finish_image_extraction()?;
         Ok(())
     }
 }
@@ -421,16 +481,17 @@ mod ext_files {
 mod load_balancing {
     use super::*;
 
-    // This test simulates a capture with 4 shards, where the first one is being rate limited
+    // This test simulates a capture with 4 shards, where the second one is being rate limited
     // at 1MB/s. We attempt to capture a 40MB image. The choke shard should receive little
     // data compared to the other shards.
     //
+    // The first shard reserved for small files will recieve nothing.
     // NOTE Load balancing works only when using pipes of capacity greater than 2*PAGE_SIZE.
     // We skip that test if we don't have enough pipe capacity.
     // The Rust test runner lacks the ability to skip a test at runtime, so we improvised a bit.
 
     const CHOKE_RATE_PER_MILLI: usize = KB; // 1MB/sec
-    const CHOKE_SHARD_INDEX: usize = 0;
+    const CHOKE_SHARD_INDEX: usize = 1;
 
     struct Test {
         _temp_dir: TempDir,
@@ -458,8 +519,12 @@ mod load_balancing {
     impl TestImpl for Test {
         fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
 
+        fn num_shards(&self) -> usize {
+            5
+        }
+
         fn shards(&mut self)-> Vec<(UnixPipe, UnixPipe)> {
-            let (shards, shard_threads) = (0..4).map(|i| {
+            let (shards, shard_threads) = (0..5).map(|i| {
                 let (mut capture_shard_r, capture_shard_w) = new_pipe();
                 let (extract_shard_r, mut extract_shard_w) = new_pipe();
                 let shard = (extract_shard_r, capture_shard_w);
@@ -501,7 +566,8 @@ mod load_balancing {
                 return Ok(());
             }
 
-            checkpoint.criu.write_img_file("file.img")?
+            // the name matters so that it gets written to the main shard.
+            checkpoint.criu.write_img_file("pages-1.img")?
                 .write_all(&self.file)?;
 
             Ok(())
@@ -522,6 +588,11 @@ mod load_balancing {
             for (i, shard_stats) in checkpoint_stats.shards.iter().enumerate() {
                 // Using 2MB threadshold as the choked shard has to be bigger than 1MB (SHARD_PIPE_CAPACITY),
                 // but not much more.
+                if i == 0 {
+                    // do not check the small shard.
+                    continue;
+                }
+
                 if i == CHOKE_SHARD_INDEX {
                     assert!(shard_stats.size < 2*MB as u64,
                             "Choked shard received too much data: {} KB", shard_stats.size/KB as u64);
@@ -539,7 +610,7 @@ mod load_balancing {
                 return Ok(());
             }
 
-            let buf = restore.criu.read_img_file_into_vec("file.img")?;
+            let buf = restore.criu.read_img_file_into_vec("pages-1.img")?;
             assert!(buf == self.file);
 
             Ok(())
@@ -565,7 +636,7 @@ mod restore_mem_usage {
 
     const BIG_FILE_SIZE: usize = 105*MB;
     const SMALL_FILE_SIZE: usize = 10;
-    const NUM_SMALL_FILES: usize = 100_000;
+    const NUM_SMALL_FILES: usize = 1000;
     const TOLERABLE_PER_FILE_OVERHEAD: isize = 200_isize;
     const TOLERABLE_CRIU_RECEIVE_OVERHEAD: isize = 12*MB as isize;
 
@@ -600,14 +671,14 @@ mod restore_mem_usage {
             // vector that may not get freed.
             let mut big_file_pipe = checkpoint.criu.write_img_file("big.img")?;
             let buf = get_filled_vec(KB, 1);
-            for _ in 0..(BIG_FILE_SIZE/buf.len()) {
+            for i in 0..(BIG_FILE_SIZE/buf.len()) {
                 big_file_pipe.write_all(&buf)?;
             }
 
             Ok(())
         }
 
-        fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+        fn after_finish_image_extraction(&mut self) -> Result<()> {
             let extraction_use = get_resident_mem_size() as isize - self.start_mem_size.unwrap() as isize;
             let overhead = extraction_use  as isize - (BIG_FILE_SIZE + NUM_SMALL_FILES * SMALL_FILE_SIZE) as isize;
             let overhead_per_file = overhead / (1 + NUM_SMALL_FILES) as isize;
@@ -712,16 +783,16 @@ mod stress {
 
             let write_files = |i: usize| {
                 for j in 0..NUM_MEDIUM_FILES {
-                    write_img_file(&format!("medium-{}-{}.img", i, j), &self.medium_file).unwrap();
+                    write_img_file(&format!("gpu-{}{}", i, j), &self.medium_file).unwrap();
                 }
                 for j in 0..NUM_LARGE_FILES {
-                    write_img_file(&format!("large-{}-{}.img", i, j), &self.large_file).unwrap();
+                    write_img_file(&format!("pages-{}{}.img", i, j), &self.large_file).unwrap();
                 }
                 for j in 0..NUM_SMALL_FILES {
-                    write_img_file(&format!("small-{}-{}.img", i, j), &self.small_file).unwrap();
+                    write_img_file(&format!("files-{}{}.img", i, j), &self.small_file).unwrap();
                 }
                 for j in 0..NUM_MEDIUM_CHUNKED_FILES {
-                    write_img_file_chunked(&format!("mediumc-{}-{}.img", i, j), &self.medium_file).unwrap();
+                    write_img_file_chunked(&format!("mediumc-{}{}", i, j), &self.medium_file).unwrap();
                 }
             };
 
@@ -744,16 +815,16 @@ mod stress {
 
             for i in 0..NUM_THREADS+1 {
                 for j in 0..NUM_MEDIUM_FILES {
-                    assert!(read_img_file(&format!("medium-{}-{}.img", i, j))? == self.medium_file);
+                    assert!(read_img_file(&format!("gpu-{}{}", i, j))? == self.medium_file);
                 }
                 for j in 0..NUM_LARGE_FILES {
-                    assert!(read_img_file(&format!("large-{}-{}.img", i, j))? == self.large_file);
+                    assert!(read_img_file(&format!("pages-{}{}.img", i, j))? == self.large_file);
                 }
                 for j in 0..NUM_SMALL_FILES {
-                    assert!(read_img_file(&format!("small-{}-{}.img", i, j))? == self.small_file);
+                    assert!(read_img_file(&format!("files-{}{}.img", i, j))? == self.small_file);
                 }
                 for j in 0..NUM_MEDIUM_CHUNKED_FILES {
-                    assert!(read_img_file(&format!("mediumc-{}-{}.img", i, j))? == self.medium_file);
+                    assert!(read_img_file(&format!("mediumc-{}{}", i, j))? == self.medium_file);
                 }
             }
 
@@ -870,14 +941,14 @@ mod extract_to_disk {
         fn serve_image(&mut self) -> bool { false }
 
         fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
-            checkpoint.criu.write_img_file("small.img")?
+            checkpoint.criu.write_img_file("files.img")?
                 .write_all(&self.small_file)?;
-            checkpoint.criu.write_img_file("medium.img")?
+            checkpoint.criu.write_img_file("pages-1.img")?
                 .write_all(&self.medium_file)?;
             Ok(())
         }
 
-        fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
+        fn after_finish_image_extraction(&mut self) -> Result<()> {
             let read_img_file = |name: &str| -> Result<Vec<u8>> {
                 let mut buf = Vec::new();
                 let mut small_file = File::open(self.images_dir().join(name))?;
@@ -885,9 +956,162 @@ mod extract_to_disk {
                 Ok(buf)
             };
 
-            assert!(read_img_file("small.img")? == self.small_file);
-            assert!(read_img_file("medium.img")? == self.medium_file);
+            assert!(read_img_file("files.img")? == self.small_file);
+            assert!(read_img_file("pages-1.img")? == self.medium_file);
 
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test() -> Result<()> {
+        Test::new().run()
+    }
+}
+
+mod memory_limit {
+    use super::*;
+    use std::{collections::HashMap, fs::File};
+
+    struct Test {
+        _temp_dir: TempDir,
+        images_dir: PathBuf,
+        files: HashMap<String, Vec<u8>>
+    }
+
+    impl Test {
+        fn new() -> Self {
+            let temp_dir = TempDir::new().expect("Failed to create temp dir");
+            let images_dir = temp_dir.path().to_path_buf();
+            let mut files = HashMap::new();
+            files.insert("process_state.json".to_string(), get_rand_vec(10*KB));
+            files.insert("rw-layer-1.img".to_string(), get_rand_vec(10*MB));
+            files.insert("rw-layer-2.img".to_string(), get_rand_vec(10*MB));
+            files.insert("rw-layer-3.img".to_string(), get_rand_vec(10*MB));
+            files.insert("rw-layer.manifest".to_string(), get_rand_vec(10*KB));
+            files.insert("runc.netns_eth0_ipv4addr".to_string(), get_rand_vec(10*KB));
+            files.insert("files.img".to_string(), get_rand_vec(10*KB));
+            files.insert("gpu-ctx-calls".to_string(), get_rand_vec(10*MB));
+            files.insert("gpu-ctx-calls-size".to_string(), get_rand_vec(10*KB));
+            files.insert("xyz.img".to_string(), get_rand_vec(10*KB));
+            files.insert("pages-1.img".to_string(), get_rand_vec(10*MB));
+            files.insert("pages-2.img".to_string(), get_rand_vec(10*MB));
+            files.insert("ghost-files-1.img".to_string(), get_rand_vec(10*MB));
+            files.insert("gpu-mem-1-2".to_string(), get_rand_vec(10*MB));
+            files.insert("gpu-mem-1-2-size".to_string(), get_rand_vec(10*KB));
+            files.insert("gpu-noctx-calls".to_string(), get_rand_vec(50*KB));
+            files.insert("gpu-noctx-calls-size".to_string(), get_rand_vec(10*KB));
+            files.insert("inventory.img".to_string(), get_rand_vec(10*KB));
+            Self { _temp_dir: temp_dir, images_dir, files }
+        }
+    }
+
+    impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.images_dir.clone() }
+        fn serve_image(&mut self) -> bool { true }
+        fn memory_limit(&self) -> Option<usize> { Some(20) }
+
+        fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
+            // Creating a realistic scenario of a container checkpoint
+            // when we do a dump, we create the following files in the following order:
+            // 1. process_state.json
+            // 2. rw-layer-%d.img
+            // 3. rw-layer.manifest
+            // 4. runc.netns_eth0_ipv4addr
+            // === the actual dump starts (parallel) ===
+            // CRIU                |  CEDANA-GPU
+            // files.img           |  gpu-ctx-calls
+            // lot's of tiny *.img |  gpu-ctx-calls-size
+            // pages-*.img         |  memory stuff
+            // core-*.img          |  gpu-mem-size
+            // inventory.img       |  gpu-no-ctx-calls
+            //                     |  gpu-no-ctx-calls-size
+            // this is a rough order
+            checkpoint.criu.write_img_file("process_state.json")?
+                .write_all(&self.files.get("process_state.json").unwrap())?;
+
+            checkpoint.criu.write_img_file("rw-layer-1.img")?
+                .write_all(&self.files.get("rw-layer-1.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("rw-layer-2.img")?
+                .write_all(&self.files.get("rw-layer-2.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("rw-layer-3.img")?
+                .write_all(&self.files.get("rw-layer-3.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("rw-layer.manifest")?
+                .write_all(&self.files.get("rw-layer.manifest").unwrap())?;
+
+            checkpoint.criu.write_img_file("runc.netns_eth0_ipv4addr")?
+                .write_all(&self.files.get("runc.netns_eth0_ipv4addr").unwrap())?;
+
+            checkpoint.criu.write_img_file("files.img")?
+                .write_all(&self.files.get("files.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-ctx-calls")?
+                .write_all(&self.files.get("gpu-ctx-calls").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-ctx-calls-size")?
+                .write_all(&self.files.get("gpu-ctx-calls-size").unwrap())?;
+
+            checkpoint.criu.write_img_file("xyz.img")?
+                .write_all(&self.files.get("xyz.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("pages-1.img")?
+                .write_all(&self.files.get("pages-1.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("pages-2.img")?
+                .write_all(&self.files.get("pages-2.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("ghost-files-1.img")?
+                .write_all(&self.files.get("ghost-files-1.img").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-mem-1-2")?
+                .write_all(&self.files.get("gpu-mem-1-2").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-mem-1-2-size")?
+                .write_all(&self.files.get("gpu-mem-1-2-size").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-noctx-calls")?
+                .write_all(&self.files.get("gpu-noctx-calls").unwrap())?;
+
+            checkpoint.criu.write_img_file("gpu-noctx-calls-size")?
+                .write_all(&self.files.get("gpu-noctx-calls-size").unwrap())?;
+
+            checkpoint.criu.write_img_file("inventory.img")?
+                .write_all(&self.files.get("inventory.img").unwrap())?;
+
+            Ok(())
+        }
+
+        fn recv_img_files(&mut self, restore: &mut RestoreContext) -> Result<()> {
+            let mut read_img_file = |name: &str| -> Result<Vec<u8>> {
+                restore.criu.read_img_file_into_vec(name)
+            };
+
+            // this order patterns
+            // in a actual scenario, we have multiple clients
+            // this tries to roughly estimate the order in which
+            // we will get requests from them
+            // notice this is not the same order in which  files were dumped
+            assert!(read_img_file("process_state.json")? == *self.files.get("process_state.json").unwrap());
+            assert!(read_img_file("rw-layer.manifest")? == *self.files.get("rw-layer.manifest").unwrap());
+            assert!(read_img_file("rw-layer-1.img")? == *self.files.get("rw-layer-1.img").unwrap());
+            assert!(read_img_file("rw-layer-2.img")? == *self.files.get("rw-layer-2.img").unwrap());
+            assert!(read_img_file("rw-layer-3.img")? == *self.files.get("rw-layer-3.img").unwrap());
+            assert!(read_img_file("runc.netns_eth0_ipv4addr")? == *self.files.get("runc.netns_eth0_ipv4addr").unwrap());
+            assert!(read_img_file("inventory.img")? == *self.files.get("inventory.img").unwrap());
+            assert!(read_img_file("xyz.img")? == *self.files.get("xyz.img").unwrap());
+            assert!(read_img_file("files.img")? == *self.files.get("files.img").unwrap());
+            assert!(read_img_file("gpu-noctx-calls-size")? == *self.files.get("gpu-noctx-calls-size").unwrap());
+            assert!(read_img_file("gpu-noctx-calls")? == *self.files.get("gpu-noctx-calls").unwrap());
+            assert!(read_img_file("gpu-ctx-calls-size")? == *self.files.get("gpu-ctx-calls-size").unwrap());
+            assert!(read_img_file("gpu-ctx-calls")? == *self.files.get("gpu-ctx-calls").unwrap());
+            assert!(read_img_file("pages-1.img")? == *self.files.get("pages-1.img").unwrap());
+            assert!(read_img_file("pages-2.img")? == *self.files.get("pages-2.img").unwrap());
+            assert!(read_img_file("ghost-files-1.img")? == *self.files.get("ghost-files-1.img").unwrap());
+            assert!(read_img_file("gpu-mem-1-2-size")? == *self.files.get("gpu-mem-1-2-size").unwrap());
+            assert!(read_img_file("gpu-mem-1-2")? == *self.files.get("gpu-mem-1-2").unwrap());
             Ok(())
         }
     }
