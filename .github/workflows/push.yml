@@ -36,7 +36,7 @@ jobs:
 
   download:
     name: Download
-    uses: cedana/cedana/.github/workflows/download.yml@retry-mechanism-for-cedana
+    uses: cedana/cedana/.github/workflows/download.yml@main
     secrets: inherit
     with:
       cedana_version: main
@@ -45,7 +45,7 @@ jobs:
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@retry-mechanism-for-cedana
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
     needs: [build, download]
     secrets: inherit
     with:
