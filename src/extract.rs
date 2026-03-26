@@ -494,7 +494,7 @@ fn serve_img(
 
         let obj = poller.poll(epoll_capacity, EpollTimeout::try_from(2000)?)?;
         let Some((_, poll_obj)) = obj else {
-            if stopped && open_pipes.is_empty() {
+            if stopped && open_pipes.is_empty() && store.is_empty() && reciever_eof {
                 eprintln!("sent over all files.");
                 break;
             }
@@ -512,7 +512,7 @@ fn serve_img(
                         // processed.
                         stopped = true;
                         poller.remove(listener_key)?;
-                        if open_pipes.is_empty() {
+                        if open_pipes.is_empty() && store.is_empty() && reciever_eof {
                             eprintln!("sent over all files.");
                             break;
                         }
