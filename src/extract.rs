@@ -548,7 +548,7 @@ fn serve_img(
                                 None => {
                                     if available_files.contains(&filename) && !filenames_of_sent_files.contains(&filename) {
                                         eprintln!("file: {} not ready", &filename);
-                                        client.send_file_reply(true, Some(FileStatus::NotReady))?;
+                                        client.send_file_reply(false, Some(FileStatus::NotReady))?;
                                     } else {
                                         // If we keep the image file in our process, Client will also
                                         // have a copy of the image file. This uses x2 the memory for an image
