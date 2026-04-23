@@ -124,11 +124,9 @@ pub fn is_small_file(filename: &str) -> bool {
         "runc.netns_eth0_ipv4addr" => true,
         file if file.contains("gpu") && file.contains("size") => true,
         file if file.starts_with("gpu-noctx-calls-") => true,
+        file if file.starts_with("gpu-hostmem-metadata-") => true,
         // large files
         file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => false,
-        file if Regex::new(r"^pages-[0-9]+\.img$").unwrap().is_match(file) => false,
-        file if Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap().is_match(file) => false,
-        file if Regex::new(r"^tcp-stream-.*\.img$").unwrap().is_match(file) => false,
         file if file.starts_with("gpu-calls-") => false,
         file if file.starts_with("gpu-mem-") => false,
         file if file.starts_with("gpu-ctx-") => false,
