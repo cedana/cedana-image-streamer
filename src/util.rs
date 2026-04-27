@@ -64,7 +64,6 @@ pub fn pb_read_next<S: Read, T: Message + Default>(src: &mut S) -> Result<Option
         None => None,
         Some(mut size_buf) => {
             let size = size_buf.get_u32_le() as usize;
-            assert!(size < 10*KB, "Would read a protobuf of size >10KB. Something is wrong");
             let buf = read_bytes_next(src, size)?.ok_or_else(|| anyhow!(EOF_ERR_MSG))?;
             let bytes_read = size_of::<u32>() + size_buf.len() + buf.len();
             Some((T::decode(buf)?, bytes_read))
@@ -82,7 +81,6 @@ pub fn pb_read<S: Read, T: Message + Default>(src: &mut S) -> Result<T> {
 pub fn pb_write<S: Write, T: Message>(dst: &mut S, msg: &T) -> Result<usize> {
     let msg_size = msg.encoded_len();
     let mut buf = BytesMut::with_capacity(size_of::<u32>() + msg_size);
-    assert!(msg_size < 10*KB, "Would serialize a protobuf of size >10KB. Something is wrong");
     buf.put_u32_le(msg_size as u32);
 
     msg.encode(&mut buf).context("Failed to encode protobuf")?;
