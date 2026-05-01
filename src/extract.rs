@@ -472,7 +472,7 @@ fn serve_img(
                             .push_back(buf);
                     },
                     Err(TryRecvError::Disconnected) => { reciever_eof = true; eprintln!("[serve_img] reciever disconnected, have everything!"); break; },
-                    Err(TryRecvError::Empty) => {eprintln!("[serve_img] nothing to recieve right now!"); break; }
+                    Err(TryRecvError::Empty) => { break; }
                 }
             }
         }
@@ -546,18 +546,17 @@ fn serve_img(
                                     }
                                 }
                                 None => {
-                                    if available_files.contains(&filename) && !filenames_of_sent_files.contains(&filename) {
-                                        eprintln!("file: {} not ready", &filename);
-                                        client.send_file_reply(true, Some(FileStatus::NotReady))?;
-                                    } else {
+                                    if filenames_of_sent_files.contains(&filename) {
                                         // If we keep the image file in our process, Client will also
                                         // have a copy of the image file. This uses x2 the memory for an image
                                         // file. For large files like memory pages, we could very much go over
                                         // the machine memory capacity.
-                                        ensure!(!filenames_of_sent_files.contains(&filename) && !available_files.contains(&filename),
-                                            "Client is requesting the image file `{}` multiple times. \
+                                        eprintln!("Client is requesting the image file `{}` multiple times", &filename);
+                                        bail!("Client is requesting the image file `{}` multiple times. \
                                             This is not allowed to keep the memory usage low", &filename);
-                                        client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
+                                    } else if available_files.contains(&filename) {
+                                        eprintln!("file: {} not ready, files in store: {:?}", &filename, store.keys().collect::<Vec<_>>());
+                                        client.send_file_reply(true, Some(FileStatus::NotReady))?;
                                     }
                                 }
                             }
