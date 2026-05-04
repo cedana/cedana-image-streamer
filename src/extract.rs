@@ -462,6 +462,101 @@ fn serve_img(
 
     let epoll_capacity = 16;
     loop {
+        let mut finished = vec![];
+        for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
+             if let Some(chunks) = store.remove(filename.as_str()) {
+                 let sent_all = send_over_chunks(filename, chunks, pipe, &semaphore)?;
+                 if sent_all {
+                     finished.push(i);
+                 }
+             }
+        }
+
+        // remove all files we have completely sent over
+        for i in finished.into_iter().rev() {
+            open_pipes.remove(i);
+        }
+
+        if stopped && open_pipes.is_empty() {
+            break;
+        }
+
+        // handle all ready events
+        let ready_events = poller.poll_for_ready_events(epoll_capacity, EpollTimeout::try_from(1000)?)?;
+
+        for _ in 0..ready_events {
+            let Some((_, poll_obj)) = poller.get_ready_event()? else {
+                break;
+            };
+            match poll_obj {
+                PollType::Listener(listener) => { // New connection waiting, accept it
+                    let conn = listener.accept()?;
+                    poller.add(conn.as_raw_fd(), PollType::Client(conn), EpollFlags::EPOLLIN)?;
+                }
+                PollType::Client(client) => {
+                    match client.read_next_file_request()? {
+                        Some(ref filename) if filename == "stop-listener" => {
+                            // Stop accepting any new connections. Pending files will still be
+                            // processed.
+                            stopped = true;
+                            poller.remove(listener_key)?;
+                            if open_pipes.is_empty() {
+                                eprintln!("sent over all files.");
+                                break;
+                            }
+                        }
+                        // check if filename has a wildcard
+                        Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
+                            // List all files in the image store.
+                            let res = util::filter_files(&file_list, pattern);
+                            eprintln!("file list request {} result: {:?}", pattern, res);
+                            client.send_file_list_reply(res)?;
+                        }
+                        Some(filename) => {
+                            if !available_files.contains(&filename) {
+                                eprintln!("file {} not found", &filename);
+                                client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
+                            } else {
+                                eprintln!("file request {}", &filename);
+                                match store.remove(&filename) {
+                                    Some(chunks) => {
+                                        // we should not get anymore requests for the file
+                                        filenames_of_sent_files.insert(filename.clone());
+                                        client.send_file_reply(true, Some(FileStatus::Ready))?; // true means that the file exists.
+                                        let mut pipe = client.recv_pipe()?;
+                                        // Try setting the pipe capacity. Failing is okay.
+                                        let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
+                                        // send as much data as we have available right now and then
+                                        // add it to the list of fds we have that are open
+                                        let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
+                                        if !res {
+                                            open_pipes.push((filename, pipe));
+                                        }
+                                    }
+                                    None => {
+                                        if filenames_of_sent_files.contains(&filename) {
+                                            // If we keep the image file in our process, Client will also
+                                            // have a copy of the image file. This uses x2 the memory for an image
+                                            // file. For large files like memory pages, we could very much go over
+                                            // the machine memory capacity.
+                                            return Err(anyhow!("Client is requesting the image file `{}` multiple times. \
+                                                This is not allowed to keep the memory usage low", &filename));
+                                        } else if available_files.contains(&filename) {
+                                            eprintln!("file {} not ready", &filename);
+                                            client.send_file_reply(true, Some(FileStatus::NotReady))?;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            // Do nothing.
+                        }
+                    }
+                }
+            }
+        }
+
         // get a chunk from receiver
         if !receiver_eof {
             loop {
@@ -481,96 +576,6 @@ fn serve_img(
             }
         }
 
-        let mut finished = vec![];
-        for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
-             if let Some(chunks) = store.remove(filename.as_str()) {
-                 let sent_all = send_over_chunks(filename, chunks, pipe, &semaphore)?;
-                 if sent_all {
-                     finished.push(i);
-                 }
-             }
-        }
-
-        // remove all files we have completely sent over
-        for i in finished.into_iter().rev() {
-            open_pipes.remove(i);
-        }
-
-        let obj = poller.poll(epoll_capacity, EpollTimeout::try_from(2000)?)?;
-        let Some((_, poll_obj)) = obj else {
-            if stopped && open_pipes.is_empty() {
-                eprintln!("sent over all files.");
-                break;
-            }
-            continue;
-        };
-        match poll_obj {
-            PollType::Listener(listener) => { // New connection waiting, accept it
-                let conn = listener.accept()?;
-                poller.add(conn.as_raw_fd(), PollType::Client(conn), EpollFlags::EPOLLIN)?;
-            }
-            PollType::Client(client) => {
-                match client.read_next_file_request()? {
-                    Some(ref filename) if filename == "stop-listener" => {
-                        // Stop accepting any new connections. Pending files will still be
-                        // processed.
-                        stopped = true;
-                        poller.remove(listener_key)?;
-                        if open_pipes.is_empty() {
-                            eprintln!("sent over all files.");
-                            break;
-                        }
-                    }
-                    // check if filename has a wildcard
-                    Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
-                        // List all files in the image store.
-                        let res = util::filter_files(&file_list, pattern);
-                        eprintln!("file list request {} result: {:?}", pattern, res);
-                        client.send_file_list_reply(res)?;
-                    }
-                    Some(filename) => {
-                        if !available_files.contains(&filename) {
-                            eprintln!("file {} not found", &filename);
-                            client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
-                        } else {
-                            eprintln!("file request {}", &filename);
-                            match store.remove(&filename) {
-                                Some(chunks) => {
-                                    // we should not get anymore requests for the file
-                                    filenames_of_sent_files.insert(filename.clone());
-                                    client.send_file_reply(true, Some(FileStatus::Ready))?; // true means that the file exists.
-                                    let mut pipe = client.recv_pipe()?;
-                                    // Try setting the pipe capacity. Failing is okay.
-                                    let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-                                    // send as much data as we have available right now and then
-                                    // add it to the list of fds we have that are open
-                                    let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
-                                    if !res {
-                                        open_pipes.push((filename, pipe));
-                                    }
-                                }
-                                None => {
-                                    if filenames_of_sent_files.contains(&filename) {
-                                        // If we keep the image file in our process, Client will also
-                                        // have a copy of the image file. This uses x2 the memory for an image
-                                        // file. For large files like memory pages, we could very much go over
-                                        // the machine memory capacity.
-                                        return Err(anyhow!("Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed to keep the memory usage low", &filename));
-                                    } else if available_files.contains(&filename) {
-                                        eprintln!("file {} not ready", &filename);
-                                        client.send_file_reply(true, Some(FileStatus::NotReady))?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // Do nothing.
-                    }
-                }
-            }
-        }
     }
 
     Ok(())

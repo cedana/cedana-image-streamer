@@ -87,11 +87,36 @@ impl<T> Poller<T> {
             if num_ready_fds == 0 {
                 return Ok(None);
             }
-
-            // We don't use a timeout (None = infinite), and we have events registered (slab is not empty)
-            // so we should have a least one fd ready.
         }
 
+        let event = self.pending_events.pop().unwrap();
+        let key = event.data() as usize;
+        let (_fd, obj) = &mut self.slab[key];
+        Ok(Some((key, obj)))
+    }
+
+    pub fn poll_for_ready_events(&mut self, capacity: usize, timeout: EpollTimeout) -> Result<usize> {
+        if self.slab.is_empty() {
+            return Ok(0);
+        }
+
+        if self.pending_events.is_empty() {
+            self.pending_events.resize(capacity, EpollEvent::empty());
+
+            let num_ready_fds = epoll_wait_no_intr(&self.epoll, &mut self.pending_events, timeout)
+                .context("Failed to wait on epoll")?;
+
+            self.pending_events.truncate(num_ready_fds);
+            return Ok(num_ready_fds)
+        }
+
+        return Ok(self.pending_events.len());
+    }
+
+    pub fn get_ready_event(&mut self) -> Result<Option<(Key, &mut T)>> {
+        if self.pending_events.is_empty() {
+            return Ok(None);
+        }
         let event = self.pending_events.pop().unwrap();
         let key = event.data() as usize;
         let (_fd, obj) = &mut self.slab[key];
