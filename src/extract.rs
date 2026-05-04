@@ -377,7 +377,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
 fn spawn_serve_img(
     images_dir: &Path,
     progress_pipe: fs::File,
-    small_file_reciever: Receiver<(String, fs_parallel::FileContent)>,
+    small_file_receiver: Receiver<(String, fs_parallel::FileContent)>,
     receiver: Receiver<(String, fs_parallel::FileContent)>,
     file_list: Vec<String>,
     semaphore: Arc<Semaphore>,
@@ -385,7 +385,7 @@ fn spawn_serve_img(
 ) -> thread::JoinHandle<Result<()>> {
     let dir = images_dir.to_path_buf();
     thread::spawn(move || {
-        serve_img(&dir, progress_pipe, small_file_reciever, receiver, file_list, semaphore, tcp_listen_remaps)
+        serve_img(&dir, progress_pipe, small_file_receiver, receiver, file_list, semaphore, tcp_listen_remaps)
     })
 }
 
@@ -419,7 +419,7 @@ fn send_over_chunks(
 fn serve_img(
     images_dir: &Path,
     mut progress_pipe: fs::File,
-    small_file_reciever: Receiver<(String, fs_parallel::FileContent)>,
+    small_file_receiver: Receiver<(String, fs_parallel::FileContent)>,
     receiver: Receiver<(String, fs_parallel::FileContent)>,
     file_list: Vec<String>,
     semaphore: Arc<Semaphore>,
@@ -428,7 +428,7 @@ fn serve_img(
 {
     let mut store: HashMap<String, VecDeque<fs_parallel::FileContent>> = HashMap::new();
 
-    for (filename, buf) in small_file_reciever {
+    for (filename, buf) in small_file_receiver {
         store.entry(filename)
             .or_default()
             .push_back(buf);
@@ -456,14 +456,14 @@ fn serve_img(
 
     let mut filenames_of_sent_files = HashSet::new();
     let available_files: HashSet<String> = file_list.clone().into_iter().collect();
-    let mut reciever_eof = false;
+    let mut receiver_eof = false;
     let mut open_pipes: Vec<(String, UnixPipe)> = vec![];
     let mut stopped = false;
 
     let epoll_capacity = 16;
     loop {
-        // get a chunk from reciever
-        if !reciever_eof {
+        // get a chunk from receiver
+        if !receiver_eof {
             loop {
                 match receiver.try_recv() {
                     Ok((filename, buf)) => {
@@ -471,7 +471,7 @@ fn serve_img(
                             .or_default()
                             .push_back(buf);
                     },
-                    Err(TryRecvError::Disconnected) => { reciever_eof = true; eprintln!("[serve_img] reciever disconnected, have everything!"); break; },
+                    Err(TryRecvError::Disconnected) => { receiver_eof = true; eprintln!("[serve_img] receiver disconnected, have everything!"); break; },
                     Err(TryRecvError::Empty) => { break; }
                 }
             }
@@ -628,8 +628,8 @@ pub fn serve(images_dir: &Path,
     };
     eprintln!("memory limit for streamer: {} MB", limit);
     let semaphore = Arc::new(semaphore::Semaphore::new(limit * MB as isize));
-    let (sender, reciever) = mpsc::channel();
-    let (small_file_sender, small_file_reciever) = mpsc::channel();
+    let (sender, receiver) = mpsc::channel();
+    let (small_file_sender, small_file_receiver) = mpsc::channel();
 
     let mut file_sender = image_store::fs_parallel::FileSender::new(sender, small_file_sender, Arc::clone(&semaphore));
 
@@ -643,7 +643,7 @@ pub fn serve(images_dir: &Path,
 
     let mut img_deserializer = ImageDeserializer::new(&mut overlayed_img_store, &mut shards);
     let metadata = img_deserializer.drain_small_file_shard()?;
-    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_reciever, reciever, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
+    let handle = spawn_serve_img(images_dir, progress_pipe, small_file_receiver, receiver, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
     img_deserializer.drain_all()?;
     file_sender.close_senders();
     handle.join().map_err(|e| anyhow!("could not serve files: {:?}", e))??;

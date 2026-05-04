@@ -485,7 +485,7 @@ mod load_balancing {
     // at 1MB/s. We attempt to capture a 40MB image. The choke shard should receive little
     // data compared to the other shards.
     //
-    // The first shard reserved for small files will recieve nothing.
+    // The first shard reserved for small files will receive nothing.
     // NOTE Load balancing works only when using pipes of capacity greater than 2*PAGE_SIZE.
     // We skip that test if we don't have enough pipe capacity.
     // The Rust test runner lacks the ability to skip a test at runtime, so we improvised a bit.

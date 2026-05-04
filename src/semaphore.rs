@@ -24,9 +24,9 @@ impl Semaphore {
         *count -= want;
     }
 
-    pub fn release(&self, to_realease: isize) {
+    pub fn release(&self, to_release: isize) {
         let mut count = self.lock.lock().unwrap();
-        *count = min(*count + to_realease, self.start_val);
+        *count = min(*count + to_release, self.start_val);
         self.cvar.notify_all();
     }
 }
