@@ -396,7 +396,7 @@ fn send_over_chunks(
     semaphore: &Arc<Semaphore>
 ) -> Result<bool> {
     let mut res = false;
-    eprintln!("sending over chunks for: {}", filename);
+    eprintln!("sending over chunks for {}", filename);
     while let Some(file_content) = chunks.pop_front() {
         match file_content {
             FileContent::Eof => {
@@ -433,7 +433,7 @@ fn serve_img(
             .or_default()
             .push_back(buf);
     }
-    eprintln!("read small files into store: {:?}", store.keys().collect::<Vec<_>>());
+    eprintln!("read small files into store {:?}", store.keys().collect::<Vec<_>>());
 
     if !tcp_listen_remaps.is_empty() {
         if let Some(files_img) = store.remove("files.img") {
@@ -471,8 +471,12 @@ fn serve_img(
                             .or_default()
                             .push_back(buf);
                     },
-                    Err(TryRecvError::Disconnected) => { receiver_eof = true; eprintln!("[serve_img] receiver disconnected, have everything!"); break; },
-                    Err(TryRecvError::Empty) => { break; }
+                    Err(TryRecvError::Disconnected) => {
+                        receiver_eof = true;
+                        eprintln!("receiver disconnected, have everything!");
+                        break;
+                    },
+                    Err(TryRecvError::Empty) => break
                 }
             }
         }
@@ -521,12 +525,12 @@ fn serve_img(
                     Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
                         // List all files in the image store.
                         let res = util::filter_files(&file_list, pattern);
-                        eprintln!("got a file list request result: {:?}", res);
+                        eprintln!("file list request {} result: {:?}", pattern, res);
                         client.send_file_list_reply(res)?;
                     }
                     Some(filename) => {
                         if !available_files.contains(&filename) {
-                            eprintln!("file: {} not found", &filename);
+                            eprintln!("file {} not found", &filename);
                             client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                         } else {
                             eprintln!("file request {}", &filename);
@@ -551,11 +555,10 @@ fn serve_img(
                                         // have a copy of the image file. This uses x2 the memory for an image
                                         // file. For large files like memory pages, we could very much go over
                                         // the machine memory capacity.
-                                        eprintln!("Client is requesting the image file `{}` multiple times", &filename);
-                                        bail!("Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed to keep the memory usage low", &filename);
+                                        return Err(anyhow!("Client is requesting the image file `{}` multiple times. \
+                                            This is not allowed to keep the memory usage low", &filename));
                                     } else if available_files.contains(&filename) {
-                                        eprintln!("file: {} not ready, files in store: {:?}", &filename, store.keys().collect::<Vec<_>>());
+                                        eprintln!("file {} not ready", &filename);
                                         client.send_file_reply(true, Some(FileStatus::NotReady))?;
                                     }
                                 }
@@ -644,10 +647,27 @@ pub fn serve(images_dir: &Path,
     let mut img_deserializer = ImageDeserializer::new(&mut overlayed_img_store, &mut shards);
     let metadata = img_deserializer.drain_small_file_shard()?;
     let handle = spawn_serve_img(images_dir, progress_pipe, small_file_receiver, receiver, metadata, Arc::clone(&semaphore), tcp_listen_remaps);
-    img_deserializer.drain_all()?;
+    let res = img_deserializer.drain_all();
+    let mut errs: Vec<anyhow::Error> = vec![];
+    if let Err(e) = res {
+        errs.push(anyhow!("could not deserialize image: {:?}", e));
+    }
     file_sender.close_senders();
-    handle.join().map_err(|e| anyhow!("could not serve files: {:?}", e))??;
-    Ok(())
+    let server_res = handle.join().unwrap();
+    if let Err(e) = server_res {
+        errs.push(anyhow!("could not serve image: {:?}", e));
+    }
+
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            errs.into_iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))
+    }
 }
 
 /// Description of the arguments can be found in main.rs

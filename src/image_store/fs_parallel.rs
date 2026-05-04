@@ -116,7 +116,8 @@ impl ImageFile for File {
             chunk.resize(size);
             shard_pipe.read_exact(&mut chunk)?;
             to_send -= size;
-            let _ = self.sender.send((self.filename.to_string(), FileContent::Content(chunk)));
+            self.sender.send((self.filename.to_string(), FileContent::Content(chunk)))
+                .map_err(|e| anyhow!("could not send chunk to server thread: {:?}", e))?;
         }
         Ok(())
 
