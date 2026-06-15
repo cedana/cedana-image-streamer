@@ -108,82 +108,13 @@ jobs:
         run: |
           REF="${{ github.head_ref || github.ref_name }}"
           REF_SAFE="$(echo "$REF" | sed 's/\//-/g')"
-          SHA="${{ github.sha }}"
-
+          checksum="$(md5sum "cedana-image-streamer" | cut -d' ' -f1)"
+          
           aws s3 cp \
             cedana-image-streamer \
             s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/${REF_SAFE}/cedana-image-streamer \
-            --metadata arch=${{ matrix.arch }},ref=${REF},sha=${SHA}
+            --metadata arch=${{ matrix.arch }},version=${REF},md5=${checksum}
 
-  aws_s3_metadata:
-    name: Generate Plugin registry_map.json
-    if: inputs.aws_s3
-    runs-on: ubuntu-latest
-    needs: aws_s3
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - amd64
-          - arm64
-
-    steps:
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        id: download-binaries
-        with:
-          name: streamer-${{ matrix.arch }}
-          path: artifacts
-
-      - name: Upload metadata.json to S3
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Generate registry_map.json
-        run: |
-          set -euo pipefail
-
-          REF="${{ github.head_ref || github.ref_name }}"
-          REF_SAFE="${REF//\//-}"
-          ARCH="${{ matrix.arch }}"
-
-          jq -n \
-            --arg arch "$ARCH" \
-            '{ arch: $arch, plugins: {} }' \
-            > registry_map.json
-
-          find artifacts -type f | while read -r file; do
-            fname="$(basename "$file")"
-            plugin="${fname%.so}"
-
-            checksum="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
-
-            jq \
-              --arg plugin "streamer" \
-              --arg name "$fname" \
-              --arg checksum "$checksum" \
-              '
-              .plugins[$plugin] |=
-                (
-                  . // {
-                    type: "EXTERNAL",
-                    binaries: []
-                  }
-                )
-              | .plugins[$plugin].binaries += [{
-                  name: $name,
-                  checksum: $checksum
-                }]
-              ' registry_map.json > tmp.json && mv tmp.json registry_map.json
-          done
-
-          aws s3 cp \
-            registry_map.json \
-            s3://cedana-bin/${{ inputs.aws_s3_path }}/${ARCH}/${REF_SAFE}/registry_map.json \
-            --content-type application/json
 
   post-summary:
     name: Post Summary
