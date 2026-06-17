@@ -115,6 +115,10 @@ jobs:
             s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/${REF_SAFE}/cedana-image-streamer \
             --metadata arch=${{ matrix.arch }},version=${REF},md5=${checksum}
 
+          aws s3 cp \
+            cedana-image-streamer \
+            s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/latest/cedana-image-streamer \
+            --metadata arch=${{ matrix.arch }},version=${REF},md5=${checksum}
 
   post-summary:
     name: Post Summary
