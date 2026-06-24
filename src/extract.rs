@@ -113,7 +113,6 @@ struct ImageDeserializer<'a, ImgStore: ImageStore> {
     //    vec, and the cycle continues.
     small_file_shard: &'a mut Shard,
     small_file_seq: u64,
-    metadata: Option<Vec<String>>,
     shards: Vec<&'a mut Shard>,
     readable_shards: Vec<&'a mut Shard>,
     pending_markers: BinaryHeap<PendingMarker<'a>>,
@@ -144,7 +143,6 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         Self {
             small_file_shard: shard_iter.nth(0).unwrap(),
             small_file_seq: 0,
-            metadata: None,
             shards: shard_iter.collect(),
             readable_shards: Vec::with_capacity(num_shards - 1),
             pending_markers: BinaryHeap::with_capacity(num_shards - 1),
@@ -306,8 +304,9 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
         Ok(self.readable_shards.pop())
     }
 
-    fn process_small_file_marker(&mut self, marker: image::Marker) -> Result<()> {
+    fn process_small_file_marker(&mut self, marker: image::Marker) -> Result<Option<Vec<String>>> {
         use marker::Body::*;
+        let mut metadata: Option<Vec<String>> = None;
 
         assert!(marker.seq == self.small_file_seq);
         match marker.body {
@@ -323,7 +322,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                     let mut metadata_bytes = Vec::with_capacity(size as usize);
                     let pipe = &mut self.small_file_shard.pipe;
                     pipe.take(size as u64).read_to_end(&mut metadata_bytes)?;
-                    self.metadata = Some(serde_json::from_slice(&metadata_bytes)?);
+                    metadata = Some(serde_json::from_slice(&metadata_bytes)?);
                 } else {
                     img_file.write_all_from_pipe(&mut self.small_file_shard.pipe, size as usize)?;
                 }
@@ -339,11 +338,12 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
             }
             _ => bail!("Malformed image marker"),
         }
-        Ok(())
+        Ok(metadata)
     }
 
     // returns file metadata
     pub fn drain_small_file_shard(&mut self) -> Result<Vec<String>> {
+        let mut metadata: Option<Vec<String>> = None;
         loop {
             match pb_read_next(&mut self.small_file_shard.pipe)? {
                 None => {
@@ -351,17 +351,21 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                 }
                 Some((marker, marker_size)) => {
                     self.small_file_shard.bytes_read += marker_size as u64;
-                    self.process_small_file_marker(marker)?;
+                    match self.process_small_file_marker(marker)? {
+                        Some(meta) => {
+                            metadata = Some(meta);
+                        }
+                        None => {},
+                    }
                     self.small_file_seq += 1;
                 }
             }
         }
-        assert!(self.metadata.is_some());
-        // don't really like the clone
-        let metadata = self.metadata.as_mut().unwrap().clone();
-        // never gonna need the original now
-        self.metadata = None;
-        Ok(metadata)
+
+        match metadata {
+            None => Err(anyhow!("could not find metadata in shard")),
+            Some(meta) => Ok(meta)
+        }
     }
 
     /// Returns successfully when the image has been fully deserialized. This is our main loop.

@@ -124,14 +124,17 @@ pub fn is_small_file(filename: &str) -> bool {
         file if file.starts_with("gpu-noctx-calls-") => true,
         file if file.starts_with("gpu-hostmem-metadata-") => true,
         file if file.starts_with("gpu-virtmem-") => true,
+        file if file.starts_with("gpu-envvars-") => true,
         // large files
-        file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => true,
+        file if Regex::new(r"^pages-[0-9]+\.img$").unwrap().is_match(file) => false,
+        file if Regex::new(r"^ghost-file-[0-9]+\.img$").unwrap().is_match(file) => true,
+        file if Regex::new(r"^tcp-stream-.*\.img$").unwrap().is_match(file) => true,
         file if file.starts_with("gpu-calls-") => false,
         file if file.starts_with("gpu-mem-") => false,
         file if file.starts_with("gpu-ctx-") => false,
         file if file.starts_with("gpu-hostmem-") => false,
         file if file.starts_with("gpu-ctxshm-") => false,
-        file if file.starts_with("gpu-envvars-") => false,
         // anything else is treated as small
         _ => true
     }
