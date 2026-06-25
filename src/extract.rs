@@ -419,6 +419,27 @@ fn send_over_chunks(
     Ok(res)
 }
 
+fn send_over_chunk(
+    filename: &str,
+    chunk: fs_parallel::FileContent,
+    pipe: &mut UnixPipe,
+    semaphore: &Arc<Semaphore>
+) -> Result<bool> {
+    eprintln!("sending over chunk for {}", filename);
+    match chunk {
+        FileContent::Eof => {
+            Ok(true)
+        }
+        FileContent::Content(chunk) => {
+            pipe.vmsplice_all(&chunk)?;
+            if !util::is_small_file(filename) {
+                semaphore.release(chunk.len() as isize);
+            }
+            Ok(false)
+        }
+    }
+}
+
 /// `serve_img()` serves the in-memory image store to Client.
 fn serve_img(
     images_dir: &Path,
@@ -461,32 +482,47 @@ fn serve_img(
     let mut filenames_of_sent_files = HashSet::new();
     let available_files: HashSet<String> = file_list.clone().into_iter().collect();
     let mut receiver_eof = false;
-    let mut open_pipes: Vec<(String, UnixPipe)> = vec![];
+    let mut open_pipes: HashMap<String, UnixPipe> = HashMap::new();
     let mut stopped = false;
 
     let epoll_capacity = 16;
     loop {
-        let mut finished = vec![];
-        for (i, (filename, pipe)) in open_pipes.iter_mut().enumerate() {
-             if let Some(chunks) = store.remove(filename.as_str()) {
-                 let sent_all = send_over_chunks(filename, chunks, pipe, &semaphore)?;
-                 if sent_all {
-                     finished.push(i);
-                 }
-             }
-        }
-
-        // remove all files we have completely sent over
-        for i in finished.into_iter().rev() {
-            open_pipes.remove(i);
-        }
-
         if stopped && open_pipes.is_empty() {
             break;
         }
 
+        // get a chunk from receiver
+        if !receiver_eof {
+            loop {
+                match receiver.try_recv() {
+                    Ok((filename, buf)) => {
+                        let open_pipe = open_pipes.get_mut(filename.as_str());
+                        match open_pipe {
+                            Some(mut pipe) => {
+                                let done = send_over_chunk(filename.as_str(), buf, &mut pipe, &semaphore)?;
+                                if done {
+                                    open_pipes.remove(filename.as_str());
+                                }
+                            }
+                            None => {
+                                store.entry(filename)
+                                    .or_default()
+                                    .push_back(buf);
+                            }
+                        }
+                    },
+                    Err(TryRecvError::Disconnected) => {
+                        receiver_eof = true;
+                        eprintln!("receiver disconnected, have everything!");
+                        break;
+                    },
+                    Err(TryRecvError::Empty) => break
+                }
+            }
+        }
+
         // handle all ready events
-        let ready_events = poller.poll_for_ready_events(epoll_capacity, EpollTimeout::try_from(1000)?)?;
+        let ready_events = poller.poll_for_ready_events(epoll_capacity, EpollTimeout::try_from(100)?)?;
 
         for _ in 0..ready_events {
             let Some((_, poll_obj)) = poller.get_ready_event()? else {
@@ -534,7 +570,7 @@ fn serve_img(
                                         // add it to the list of fds we have that are open
                                         let res = send_over_chunks(&filename, chunks, &mut pipe, &semaphore)?;
                                         if !res {
-                                            open_pipes.push((filename, pipe));
+                                            open_pipes.insert(filename, pipe);
                                         }
                                     }
                                     None => {
@@ -560,26 +596,6 @@ fn serve_img(
                 }
             }
         }
-
-        // get a chunk from receiver
-        if !receiver_eof {
-            loop {
-                match receiver.try_recv() {
-                    Ok((filename, buf)) => {
-                        store.entry(filename)
-                            .or_default()
-                            .push_back(buf);
-                    },
-                    Err(TryRecvError::Disconnected) => {
-                        receiver_eof = true;
-                        eprintln!("receiver disconnected, have everything!");
-                        break;
-                    },
-                    Err(TryRecvError::Empty) => break
-                }
-            }
-        }
-
     }
 
     Ok(())
