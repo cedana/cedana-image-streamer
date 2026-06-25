@@ -97,28 +97,64 @@ jobs:
         with:
           name: streamer-${{ matrix.arch }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Push streamer
+      - name: Upload to Propagator
+        env:
+          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
         run: |
-          REF="${{ github.head_ref || github.ref_name }}"
-          REF_SAFE="$(echo "$REF" | sed 's/\//-/g')"
-          checksum="$(md5sum "cedana-image-streamer" | cut -d' ' -f1)"
-          
-          aws s3 cp \
-            cedana-image-streamer \
-            s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/${REF_SAFE}/cedana-image-streamer \
-            --metadata arch=${{ matrix.arch }},version=${REF},md5=${checksum}
+          set -euo pipefail
 
-          aws s3 cp \
-            cedana-image-streamer \
-            s3://cedana-bin/${{ inputs.aws_s3_path }}/${{ matrix.arch }}/latest/cedana-image-streamer \
-            --metadata arch=${{ matrix.arch }},version=${REF},md5=${checksum}
+          REF="${{ github.head_ref || github.ref_name }}"
+          ARCH="${{ matrix.arch }}"
+
+          REPOSITORY="${{ inputs.aws_s3_path }}"
+          BUILD=""
+          if [[ "$REPOSITORY" == *"alpha"* ]]; then
+            BUILD="alpha"
+          fi
+          REPOSITORY="${REPOSITORY%-alpha}"
+
+          FILE="cedana-image-streamer"
+
+          CHECKSUM="$(
+            python3 - <<'PY' "$FILE"
+          import sys, zlib, base64, struct
+          path = sys.argv[1]
+          with open(path, "rb") as f:
+              crc = zlib.crc32(f.read()) & 0xffffffff
+          print(base64.b64encode(struct.pack(">I", crc)).decode())
+          PY
+          )"
+
+          echo "Querying propagator for ${FILE} ..."
+          RESPONSE="$(
+            curl -sS --fail \
+              "${CEDANA_URL}/plugins/upload/${FILE}?repository=${REPOSITORY}&version=${REF}&arch=${ARCH}&build=${BUILD}&checksum=${CHECKSUM}" \
+              -H "Authorization: Bearer $CEDANA_AUTH_TOKEN"
+          )"
+
+          VERSION_UPLOAD_URL="$(echo "$RESPONSE" | jq -r '.version_upload_url')"
+          LATEST_UPLOAD_URL="$(echo "$RESPONSE" | jq -r '.latest_upload_url')"
+
+          test -n "$VERSION_UPLOAD_URL" && [ "$VERSION_UPLOAD_URL" != "null" ] || {
+            echo "version_upload_url missing in response: $RESPONSE"
+            exit 1
+          }
+
+          test -n "$LATEST_UPLOAD_URL" && [ "$LATEST_UPLOAD_URL" != "null" ] || {
+            echo "latest_upload_url missing in response: $RESPONSE"
+            exit 1
+          }
+
+          echo "Uploading ${FILE} ..."
+          for URL in "$VERSION_UPLOAD_URL" "$LATEST_UPLOAD_URL"; do
+            curl -sS --fail -X PUT "$URL" \
+              -H "Content-Type: application/octet-stream" \
+              -H "x-amz-meta-version: ${REF}" \
+              -H "x-amz-checksum-crc32: ${CHECKSUM}" \
+              -H "x-amz-sdk-checksum-algorithm: CRC32" \
+              --upload-file "$FILE"
+          done
 
   post-summary:
     name: Post Summary
@@ -159,43 +195,55 @@ jobs:
           excludes: draft
           repository: ${{ github.repository }}\
 
-      - name: Download streamer from S3
+      - name: Download streamer
         env:
+          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           VERSION=$(echo $VERSION | sed 's/\//-/g')
+          BUILD="alpha"
           if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
-            aws_s3_path="cedana-image-streamer"
-          else
-            aws_s3_path="cedana-image-streamer-alpha"
+            BUILD=""
           fi
-          mkdir -p streamer
-          REF="${{ github.head_ref || github.ref_name }}"
-          REF_SAFE="${REF//\//-}"
+          ARCH="${{ matrix.arch }}"
+          FILE="cedana-image-streamer"
 
-          aws s3 cp \
-            s3://cedana-bin/${aws_s3_path}/${{ matrix.arch }}/${VERSION}/cedana-image-streamer \
-            streamer/cedana-image-streamer
+          mkdir -p current
 
-      - name: Download previous streamer from S3
+          curl -fL \
+            "${CEDANA_URL}/plugins/download/${FILE}?version=${VERSION}&arch=${ARCH}&build=${BUILD}" \
+            -H "Authorization: Bearer $CEDANA_AUTH_TOKEN" \
+            --output "current/${FILE}"
+
+          test -f "current/${FILE}"
+          test -s "current/${FILE}"
+
+      - name: Download previous streamer
         env:
+          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
           set -euo pipefail
           VERSION=$(echo $VERSION | sed 's/\//-/g')
+          BUILD="alpha"
           if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
-            aws_s3_path="cedana-image-streamer"
-          else
-            aws_s3_path="cedana-image-streamer-alpha"
+            BUILD=""
           fi
-          mkdir -p streamer
-          REF="${{ github.head_ref || github.ref_name }}"
-          REF_SAFE="${REF//\//-}"
+          ARCH="${{ matrix.arch }}"
+          FILE="cedana-image-streamer"
 
-          aws s3 cp \
-            s3://cedana-bin/${aws_s3_path}/${{ matrix.arch }}/${VERSION}/cedana-image-streamer \
-            streamer/cedana-image-streamer
+          mkdir -p previous
+
+          curl -fL \
+            "${CEDANA_URL}/plugins/download/${FILE}?version=${VERSION}&arch=${ARCH}&build=${BUILD}" \
+            -H "Authorization: Bearer $CEDANA_AUTH_TOKEN" \
+            --output "previous/${FILE}"
+
+          test -f "previous/${FILE}"
+          test -s "previous/${FILE}"
 
       - name: Generate summary
         id: summary
