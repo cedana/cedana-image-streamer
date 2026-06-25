@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload to Propagator
         env:
-          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
         run: |
           set -euo pipefail
@@ -128,9 +128,11 @@ jobs:
 
           echo "Querying propagator for ${FILE} ..."
           RESPONSE="$(
-            curl -sS --fail \
-              "${CEDANA_URL}/plugins/upload/${FILE}?repository=${REPOSITORY}&version=${REF}&arch=${ARCH}&build=${BUILD}&checksum=${CHECKSUM}" \
-              -H "Authorization: Bearer $CEDANA_AUTH_TOKEN"
+            curl -sS --fail -X POST \
+              "${CEDANA_URL}/plugins/upload/${FILE}" \
+              -H "Authorization: Bearer $CEDANA_AUTH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"repository\":\"${REPOSITORY}\",\"version\":\"${REF}\",\"arch\":\"${ARCH}\",\"build\":\"${BUILD}\",\"checksum\":\"${CHECKSUM}\"}"
           )"
 
           VERSION_UPLOAD_URL="$(echo "$RESPONSE" | jq -r '.version_upload_url')"
@@ -146,14 +148,27 @@ jobs:
             exit 1
           }
 
-          echo "Uploading ${FILE} ..."
           for URL in "$VERSION_UPLOAD_URL" "$LATEST_UPLOAD_URL"; do
-            curl -sS --fail -X PUT "$URL" \
-              -H "Content-Type: application/octet-stream" \
-              -H "x-amz-meta-version: ${REF}" \
-              -H "x-amz-checksum-crc32: ${CHECKSUM}" \
-              -H "x-amz-sdk-checksum-algorithm: CRC32" \
-              --upload-file "$FILE"
+            success=false
+            for attempt in {1..5}; do
+              echo "Uploading ${FILE} (Attempt $attempt) ..."
+              if curl -sS --fail -X PUT "$URL" \
+                -H "Content-Type: application/octet-stream" \
+                -H "x-amz-meta-version: ${REF}" \
+                -H "x-amz-checksum-crc32: ${CHECKSUM}" \
+                -H "x-amz-sdk-checksum-algorithm: CRC32" \
+                --upload-file "$FILE"; then
+                success=true
+                break
+              else
+                echo "Upload failed on attempt $attempt. Retrying in 2 seconds..."
+                sleep 2
+              fi
+            done
+            if [ "$success" = "false" ]; then
+              echo "Error: Failed to upload ${FILE} after 5 attempts."
+              exit 1
+            fi
           done
 
   post-summary:
@@ -197,7 +212,7 @@ jobs:
 
       - name: Download streamer
         env:
-          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.tag.outputs.tag }}
         run: |
@@ -222,7 +237,7 @@ jobs:
 
       - name: Download previous streamer
         env:
-          CEDANA_URL: ${{ secrets.CEDANA_URL }}
+          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
