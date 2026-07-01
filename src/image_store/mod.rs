@@ -15,6 +15,7 @@
 pub mod fs_overlay;
 pub mod fs;
 pub mod mem;
+pub mod fs_parallel;
 
 use anyhow::Result;
 use crate::unix_pipe::UnixPipe;
@@ -40,7 +41,7 @@ pub trait ImageStore {
     fn create(&mut self, filename: &str) -> Result<Self::File>;
     /// `insert()` takes ownership of a previously created file, and insert it
     /// in the image store.
-    fn insert(&mut self, filename: impl Into<Box<str>>, file: Self::File);
+    fn insert(&mut self, filename: impl Into<Box<str>>, file: Self::File) -> Result<()>;
 }
 
 pub trait ImageFile {

@@ -1,5 +1,12 @@
 name: Release
 
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  pull-requests: write
+  checks: write
+
 on:
   push:
     tags:
@@ -25,12 +32,6 @@ on:
 concurrency:
   group: cedana-image-streamer-release-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-  pull-requests: write
 
 jobs:
   build:
