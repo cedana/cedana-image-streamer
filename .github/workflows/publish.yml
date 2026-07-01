@@ -109,22 +109,14 @@ jobs:
 
           REPOSITORY="${{ inputs.aws_s3_path }}"
           BUILD=""
-          if [[ "$REPOSITORY" == *"alpha"* ]]; then
+          if [[ "$REPOSITORY" == "cedana-image-streamer-alpha" ]]; then
             BUILD="alpha"
+            REPOSITORY="cedana-image-streamer"
           fi
-          REPOSITORY="${REPOSITORY%-alpha}"
 
           FILE="cedana-image-streamer"
 
-          CHECKSUM="$(
-            python3 - <<'PY' "$FILE"
-          import sys, zlib, base64, struct
-          path = sys.argv[1]
-          with open(path, "rb") as f:
-              crc = zlib.crc32(f.read()) & 0xffffffff
-          print(base64.b64encode(struct.pack(">I", crc)).decode())
-          PY
-          )"
+          CHECKSUM="$(python3 -c 'import sys, zlib, base64, struct; print(base64.b64encode(struct.pack(">I", zlib.crc32(open(sys.argv[1], "rb").read()) & 0xffffffff)).decode())' "$FILE")"
 
           echo "Querying propagator for ${FILE} ..."
           RESPONSE="$(
@@ -208,7 +200,7 @@ jobs:
         with:
           token: ${{ github.token }}
           excludes: draft
-          repository: ${{ github.repository }}\
+          repository: ${{ github.repository }}
 
       - name: Download streamer
         env:
@@ -217,7 +209,6 @@ jobs:
           VERSION: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          VERSION=$(echo $VERSION | sed 's/\//-/g')
           BUILD="alpha"
           if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
             BUILD=""
@@ -242,7 +233,6 @@ jobs:
           VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          VERSION=$(echo $VERSION | sed 's/\//-/g')
           BUILD="alpha"
           if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
             BUILD=""
