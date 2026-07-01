@@ -233,6 +233,10 @@ jobs:
           VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
           set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            echo "No previous version tag found. Skipping download of previous binaries."
+            exit 0
+          fi
           BUILD="alpha"
           if [ "${VERSION#v}" != "$VERSION" ] || [ "$VERSION" = "latest" ]; then
             BUILD=""
@@ -242,13 +246,17 @@ jobs:
 
           mkdir -p previous
 
-          curl -fL \
+          if curl -fL \
             "${CEDANA_URL}/plugins/download/${FILE}?version=${VERSION}&arch=${ARCH}&build=${BUILD}" \
             -H "Authorization: Bearer $CEDANA_AUTH_TOKEN" \
-            --output "previous/${FILE}"
-
-          test -f "previous/${FILE}"
-          test -s "previous/${FILE}"
+            --output "previous/${FILE}" && \
+            test -f "previous/${FILE}" && \
+            test -s "previous/${FILE}"; then
+            echo "Downloaded previous ${FILE} successfully."
+          else
+            echo "Failed to download previous ${FILE}, ignoring."
+            rm -f "previous/${FILE}"
+          fi
 
       - name: Generate summary
         id: summary
