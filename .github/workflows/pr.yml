@@ -31,7 +31,7 @@ on:
         default: false
 
 concurrency:
-  group: cedana-image-streamer-pr-${{ github.ref }}
+  group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
