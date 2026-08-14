@@ -75,5 +75,6 @@ jobs:
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_publish }}
       github: true
-      aws_s3: true
+      propagator: true
+      propagator_repo: cedana-image-streamer
       post_summary: true

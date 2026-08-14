@@ -13,14 +13,14 @@ on:
         description: "Publish to GitHub"
         required: false
         default: false
-      aws_s3:
+      propagator:
         type: boolean
-        description: "Publish to AWS s3"
+        description: "Publish to propagator"
         required: false
         default: false
-      aws_s3_path:
+      propagator_repo:
         type: string
-        description: "AWS s3 path to publish to"
+        description: "Propagator repository to publish to"
         required: false
         default: cedana-image-streamer
       post_summary:
@@ -79,9 +79,9 @@ jobs:
               --repo="$GITHUB_REPOSITORY" \
               *.tar.gz \
 
-  aws_s3:
-    name: aws-s3-${{ matrix.arch }}
-    if: inputs.aws_s3
+  propagator:
+    name: propagator-${{ matrix.arch }}
+    if: inputs.propagator
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -107,7 +107,7 @@ jobs:
           REF="${{ github.head_ref || github.ref_name }}"
           ARCH="${{ matrix.arch }}"
 
-          REPOSITORY="${{ inputs.aws_s3_path }}"
+          REPOSITORY="${{ inputs.propagator_repo }}"
           BUILD=""
           if [[ "$REPOSITORY" == "cedana-image-streamer-alpha" ]]; then
             BUILD="alpha"
@@ -167,7 +167,7 @@ jobs:
     name: Post Summary
     runs-on: ubuntu-latest
     if: inputs.post_summary
-    needs: [github, aws_s3]
+    needs: [github, propagator]
     strategy:
       fail-fast: true
       matrix:
