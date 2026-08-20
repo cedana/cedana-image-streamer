@@ -1,5 +1,8 @@
 name: Publish
 
+env:
+  CEDANA_URL: ${{ vars.CEDANA_URL }}
+
 on:
   workflow_call:
     inputs:
@@ -99,7 +102,6 @@ jobs:
 
       - name: Upload to Propagator
         env:
-          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
         run: |
           set -euo pipefail
@@ -204,7 +206,6 @@ jobs:
 
       - name: Download streamer
         env:
-          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.tag.outputs.tag }}
         run: |
@@ -228,7 +229,6 @@ jobs:
 
       - name: Download previous streamer
         env:
-          CEDANA_URL: "https://rahul.cedana.ai/v2"
           CEDANA_AUTH_TOKEN: ${{ secrets.CEDANA_AUTH_TOKEN }}
           VERSION: ${{ steps.previous-tag.outputs.tag }}
         run: |
