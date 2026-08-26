@@ -83,7 +83,7 @@ jobs:
               *.tar.gz \
 
   propagator:
-    name: propagator-${{ matrix.arch }}
+    name: Propagator
     if: inputs.propagator
     runs-on: ubuntu-latest
     strategy:
