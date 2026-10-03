@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use super::{ImageStore, ImageFile};
+use super::{ImageStore, ImageFile, list_filenames};
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -54,44 +54,7 @@ impl Store {
     }
 
     pub fn list(&self, pattern: &str) -> Vec<String> {
-        if pattern.is_empty() {
-            // If the pattern is empty, return all files
-            return self.files.keys().map(|filename| filename.to_string()).collect();
-        }
-
-        // Convert glob pattern to regex pattern
-        // Escape regex special characters first, then convert glob wildcards
-        let mut regex_pattern = String::new();
-        regex_pattern.push('^'); // Match from start of string
-
-        for ch in pattern.chars() {
-            match ch {
-                '*' => regex_pattern.push_str(".*"),  // * matches any characters
-                '?' => regex_pattern.push('.'),       // ? matches any single character
-                // Escape regex special characters
-                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                    regex_pattern.push('\\');
-                    regex_pattern.push(ch);
-                }
-                // Regular characters pass through
-                _ => regex_pattern.push(ch),
-            }
-        }
-
-        regex_pattern.push('$'); // Match to end of string
-
-        // do a regular expression match
-        let re = regex::Regex::new(&regex_pattern);
-        match re {
-            Ok(re) => self.files.keys()
-                .filter(|&filename| re.is_match(filename))
-                .map(|filename| filename.to_string())
-                .collect(),
-            Err(_) => {
-                // If the regex is invalid, return an empty list
-                vec![]
-            }
-        }
+        list_filenames(self.files.keys().map(|filename| filename.as_ref()), pattern)
     }
 }
 

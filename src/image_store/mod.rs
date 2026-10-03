@@ -15,6 +15,7 @@
 pub mod fs_overlay;
 pub mod fs;
 pub mod mem;
+pub mod memfd;
 
 use anyhow::Result;
 use crate::unix_pipe::UnixPipe;
@@ -22,17 +23,42 @@ use crate::unix_pipe::UnixPipe;
 // The `ImageStore` is only used during image extraction.
 //
 // `ImageDeserializer` in extract.rs outputs the image into an image store, defined here.
-// We have three image stores:
+// We have four image stores:
 // * `fs::Store`, used to store an image on disk.
 // * `mem::Store`, used to store an image in memory. This is useful to stream the image to
 //   CRIU without touching disk.
+// * `memfd::Store`, used by serve to store images in memfds and transfer GPU descriptors directly.
 // * `fs_overlay::Store`, used for bypassing certain files (like fs.tar) when extracting to memory.
 //   These special files are passed via the "--ext-files-fds" option on the CLI.
 
 // We use a `Box<str>` instead of `String` for filenames to reduce memory usage by 8 bytes per
 // filename. CRIU can generate a lot of files (e.g., one per checkpointed application thread).
-// We still have a fairly high memory overhead per file of ~150 bytes. See the `restore_mem_usage`
-// integration test.
+// See the `restore_mem_usage` integration test for userspace memory overhead.
+
+fn list_filenames<'a>(filenames: impl Iterator<Item = &'a str>, pattern: &str) -> Vec<String> {
+    if pattern.is_empty() {
+        return filenames.map(str::to_string).collect();
+    }
+
+    let mut regex_pattern = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex_pattern.push_str(".*"),
+            '?' => regex_pattern.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex_pattern.push('\\');
+                regex_pattern.push(ch);
+            }
+            _ => regex_pattern.push(ch),
+        }
+    }
+    regex_pattern.push('$');
+
+    match regex::Regex::new(&regex_pattern) {
+        Ok(re) => filenames.filter(|filename| re.is_match(filename)).map(str::to_string).collect(),
+        Err(_) => Vec::new(),
+    }
+}
 
 pub trait ImageStore {
     type File: ImageFile;

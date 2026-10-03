@@ -17,7 +17,7 @@ use bytes::Buf;
 
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{BufReader, Read, Seek, Write},
     mem::size_of,
 };
 
@@ -57,7 +57,7 @@ fn write_criu_img_header(writer: &mut impl Write, header_magic: u32) -> Result<(
 }
 
 fn patch_tcp_listen_remaps(
-    img_store: &mut image_store::mem::Store,
+    img_store: &mut image_store::memfd::Store,
     tcp_listen_remaps: Vec<(u16, u16)>,
 ) -> Result<()>
 {
@@ -67,10 +67,10 @@ fn patch_tcp_listen_remaps(
 
     let mut tcp_listen_remaps: HashMap<u16, u16> = tcp_listen_remaps.into_iter().collect();
 
-    // remove() corresponds to HashMap::remove() in the memory store.
-    let old_files = img_store.remove("files.img")
+    let mut old_files = img_store.remove("files.img")
         .ok_or_else(|| anyhow!("files.img is missing from the image"))?;
-    let mut old_files = old_files.reader();
+    old_files.rewind()?;
+    let mut old_files = BufReader::new(old_files);
     read_criu_img_header(&mut old_files, FILES_MAGIC)?;
 
     let mut new_files = img_store.create("files.img")?;
@@ -119,11 +119,53 @@ fn patch_tcp_listen_remaps(
 }
 
 pub fn patch_img(
-    img_store: &mut image_store::mem::Store,
+    img_store: &mut image_store::memfd::Store,
     tcp_listen_remaps: Vec<(u16, u16)>,
 ) -> Result<()>
 {
     patch_tcp_listen_remaps(img_store, tcp_listen_remaps)
         .context("Failed to remap TCP listen ports")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::fcntl::{fcntl, FcntlArg};
+
+    #[test]
+    fn remap_tcp_listen_port_in_memfd_store() -> Result<()> {
+        let mut store = image_store::memfd::Store::default();
+        let mut file = store.create("files.img")?;
+        write_criu_img_header(&mut file, FILES_MAGIC)?;
+        let listener = criu::FileEntry {
+            id: 1,
+            isk: Some(criu::InetSkEntry {
+                proto: libc::IPPROTO_TCP as u32,
+                state: TCP_LISTEN,
+                src_port: 2000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let other = criu::FileEntry { id: 2, ..Default::default() };
+        pb_write(&mut file, &listener)?;
+        pb_write(&mut file, &other)?;
+        store.insert("files.img", file);
+
+        // The replacement port takes more protobuf bytes, requiring a newly written image.
+        patch_img(&mut store, vec![(2000, 30000)])?;
+        let mut patched = store.remove("files.img").unwrap();
+        fcntl(&patched, FcntlArg::F_GET_SEALS)?;
+        patched.rewind()?;
+        read_criu_img_header(&mut patched, FILES_MAGIC)?;
+        let mut expected = listener;
+        expected.isk.as_mut().unwrap().src_port = 30000;
+        let actual: criu::FileEntry = crate::util::pb_read(&mut patched)?;
+        assert_eq!(actual, expected);
+        let actual: criu::FileEntry = crate::util::pb_read(&mut patched)?;
+        assert_eq!(actual, other);
+        assert!(pb_read_next::<_, criu::FileEntry>(&mut patched)?.is_none());
+        Ok(())
+    }
 }

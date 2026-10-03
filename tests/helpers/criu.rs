@@ -18,14 +18,14 @@
 
 use std::{
     os::unix::net::UnixStream,
-    os::unix::io::AsRawFd,
+    os::unix::io::{AsRawFd, FromRawFd},
     io::Read,
     path::PathBuf,
 };
 use anyhow::{Result, Context};
 use cedana_image_streamer::{
     criu,
-    util::{pb_read, pb_write},
+    util::{pb_read, pb_write, recv_fd},
     unix_pipe::UnixPipe,
 };
 use crate::helpers::util::*;
@@ -68,6 +68,9 @@ impl Criu {
     }
 
     pub fn maybe_read_img_file(&mut self, filename: &str) -> Result<Option<UnixPipe>> {
+        if filename.starts_with("gpu-") {
+            return self.maybe_read_img_memfd(filename);
+        }
         let filename = filename.to_string();
         pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename })?;
 
@@ -75,6 +78,17 @@ impl Criu {
             let (pipe_r, pipe_w) = new_pipe();
             send_fd(&mut self.socket, pipe_w.as_raw_fd())?;
             Ok(Some(pipe_r))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn maybe_read_img_memfd(&mut self, filename: &str) -> Result<Option<std::fs::File>> {
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: filename.to_string() })?;
+        if self.read_file_reply()? {
+            let fd = recv_fd(&mut self.socket)?;
+            // SAFETY: recv_fd() transfers ownership of the received descriptor.
+            Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
         } else {
             Ok(None)
         }

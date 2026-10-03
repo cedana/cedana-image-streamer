@@ -23,6 +23,12 @@ descriptor. Filenames starting with `gpu-` must supply a fully populated memfd;
 the streamer reads its contents from offset zero. Other filenames supply the read
 end of a pipe. Both inputs use the same shard format for extraction and restore.
 
+During `serve`, buffered image files are stored in memfds. After the usual
+"file exists" reply on `streamer-serve.sock`, a `gpu-` request receives the fully
+populated memfd directly via `SCM_RIGHTS`, positioned at offset zero. The client
+does not send a pipe for these requests. Other filenames retain the pipe-based
+restore protocol.
+
 License
 -------
 cedana-image-streamer is licensed under the [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0).

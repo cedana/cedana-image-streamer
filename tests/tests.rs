@@ -60,6 +60,7 @@ struct CheckpointContext {
 
 struct StreamerRestoreContext {
     progress: BufReader<UnixPipe>,
+    worker_thread: Option<thread::JoinHandle<()>>,
 }
 
 struct RestoreContext {
@@ -101,7 +102,7 @@ trait TestImpl {
             })
         };
 
-        {
+        let extract_thread = {
             let images_dir = self.images_dir();
             let ext_files = self.extract_ext_files();
             let serve_image = self.serve_image();
@@ -124,6 +125,7 @@ trait TestImpl {
                 },
                 StreamerRestoreContext {
                     progress: extract_progress,
+                    worker_thread: Some(extract_thread),
                 }
         ))
     }
@@ -160,7 +162,11 @@ trait TestImpl {
     }
 
     fn finish_image_extraction(&mut self, restore: &mut StreamerRestoreContext) -> Result<Stats> {
-        read_stats(&mut restore.progress)
+        let stats = read_stats(&mut restore.progress)?;
+        if !self.serve_image() {
+            restore.worker_thread.take().unwrap().join().unwrap();
+        }
+        Ok(stats)
     }
 
     fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
@@ -182,6 +188,7 @@ trait TestImpl {
 
     fn finish_restore(&mut self, mut restore: RestoreContext) -> Result<()> {
         restore.criu.finish()?;
+        restore._streamer.worker_thread.take().unwrap().join().unwrap();
         Ok(())
     }
 
@@ -250,11 +257,13 @@ mod gpu_memfd {
     use super::*;
     use std::{fs::File, io::Seek};
     use nix::sys::memfd::{memfd_create, MFdFlags};
+    use nix::fcntl::{fcntl, FcntlArg};
 
     struct Test {
         temp_dir: TempDir,
         files: Vec<(String, Vec<u8>)>,
         memfds: Vec<File>,
+        restored_memfds: Vec<(String, File)>,
         serve_image: bool,
     }
 
@@ -268,6 +277,7 @@ mod gpu_memfd {
                     ("gpu-large.img".to_string(), get_rand_vec(2*MB + 37)),
                 ],
                 memfds: Vec::new(),
+                restored_memfds: Vec::new(),
                 serve_image,
             }
         }
@@ -318,9 +328,38 @@ mod gpu_memfd {
         }
 
         fn recv_img_files(&mut self, restore: &mut RestoreContext) -> Result<()> {
+            let listed = restore.criu.list_img_files("gpu-*")?;
+            assert_eq!(listed.len(), self.memfds.len());
+            assert!(restore.criu.maybe_read_img_memfd("gpu-missing.img")?.is_none());
+
             for (filename, data) in &self.files {
-                assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
-                           "File data content mismatch for {}", filename);
+                if filename.starts_with("gpu-") {
+                    let mut memfd = restore.criu.maybe_read_img_memfd(filename)?
+                        .expect("GPU image is missing");
+                    // F_GET_SEALS distinguishes memfds from pipes and ordinary disk files.
+                    fcntl(&memfd, FcntlArg::F_GET_SEALS)?;
+                    assert!(memfd.metadata()?.is_file());
+                    assert_eq!(memfd.metadata()?.len(), data.len() as u64);
+                    assert_eq!(memfd.stream_position()?, 0, "Restored memfd must start at offset zero");
+                    self.restored_memfds.push((filename.clone(), memfd));
+                } else {
+                    assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
+                               "File data content mismatch for {}", filename);
+                }
+            }
+            assert!(restore.criu.list_img_files("*")?.is_empty());
+            Ok(())
+        }
+
+        fn finish_restore(&mut self, mut restore: RestoreContext) -> Result<()> {
+            restore.criu.finish()?;
+            restore._streamer.worker_thread.take().unwrap().join().unwrap();
+            // The client's descriptors remain valid after the streamer closes its copies and exits.
+            for (filename, mut memfd) in self.restored_memfds.drain(..) {
+                let mut buf = Vec::new();
+                memfd.read_to_end(&mut buf)?;
+                let (_, expected) = self.files.iter().find(|(name, _)| name == &filename).unwrap();
+                assert_eq!(&buf, expected, "File data content mismatch for {}", filename);
             }
             Ok(())
         }
@@ -648,11 +687,11 @@ mod restore_mem_usage {
 
     // We test one large file, and many small ones, simulating a fair CRIU workload.
     // There are two things to test:
-    // 1) The in-memory store should have low overhead. 200 bytes per file is not exactly good, but
-    //    it's good enough (measured at 129 bytes). I welcome suggestion to make this better.
-    // 2) The in-memory store should free its memory as its transferring a file to CRIU
-    //    It shouldn't be bigger than image_store::mem::MAX_LARGE_CHUNK_SIZE (10MB). We add a bit
-    //    for slack.
+    // 1) The memfd store should have low userspace bookkeeping overhead. Memfd contents live
+    //    in the kernel, so they do not contribute to this process's RSS.
+    // 2) Serving a file should not create an extra userspace copy of its contents. Exclude the
+    //    receiving client's vector from RSS growth when measuring transfer overhead.
+    //    memfd_store_tests separately verifies that transferred backing pages are released.
 
     const BIG_FILE_SIZE: usize = 105*MB;
     const SMALL_FILE_SIZE: usize = 10;
@@ -700,8 +739,7 @@ mod restore_mem_usage {
 
         fn after_finish_image_extraction(&mut self, _restore_stats: &Stats) -> Result<()> {
             let extraction_use = get_resident_mem_size() as isize - self.start_mem_size.unwrap() as isize;
-            let overhead = extraction_use  as isize - (BIG_FILE_SIZE + NUM_SMALL_FILES * SMALL_FILE_SIZE) as isize;
-            let overhead_per_file = overhead / (1 + NUM_SMALL_FILES) as isize;
+            let overhead_per_file = extraction_use / (1 + NUM_SMALL_FILES) as isize;
 
             assert!(overhead_per_file < TOLERABLE_PER_FILE_OVERHEAD,
                     "In-memory image store shows too much memory overhead per file: {} bytes", overhead_per_file);
@@ -719,7 +757,7 @@ mod restore_mem_usage {
                 let count = big_file_pipe.take(10*KB as u64).read_to_end(&mut big_file)?;
 
                 let delta_recv_mem_usage = get_resident_mem_size() as isize - start_recv_mem_usage as isize;
-                max_overhead = max(max_overhead, delta_recv_mem_usage);
+                max_overhead = max(max_overhead, delta_recv_mem_usage - big_file.len() as isize);
 
                 if count == 0 {
                     break; // EOF

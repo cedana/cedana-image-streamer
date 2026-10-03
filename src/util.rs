@@ -17,12 +17,12 @@ use std::{
     mem::size_of,
     os::unix::net::UnixStream,
     os::unix::io::{RawFd, AsRawFd},
-    io::{Read, Write, IoSliceMut},
+    io::{Read, Write, IoSlice, IoSliceMut},
     path::Path,
     fs,
 };
 use nix::{
-    sys::socket::{ControlMessageOwned, MsgFlags, recvmsg},
+    sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg},
     unistd::{sysconf, SysconfVar},
 };
 use bytes::{BytesMut, Buf, BufMut};
@@ -101,6 +101,16 @@ pub fn recv_fd(socket: &mut UnixStream) -> Result<RawFd> {
         Some(ControlMessageOwned::ScmRights(fds)) if fds.len() == 1 => fds[0],
         _ => bail!("No fd received"),
     })
+}
+
+pub fn send_fd(socket: &mut UnixStream, fd: RawFd) -> Result<()> {
+    let sent = sendmsg::<()>(socket.as_raw_fd(),
+                            &[IoSlice::new(&[0])],
+                            &[ControlMessage::ScmRights(&[fd])],
+                            MsgFlags::MSG_NOSIGNAL, None)
+        .context("Failed to send fd over socket")?;
+    ensure!(sent == 1, "Failed to send fd payload over socket");
+    Ok(())
 }
 
 pub fn emit_progress(progress_pipe: &mut fs::File, msg: &str) {

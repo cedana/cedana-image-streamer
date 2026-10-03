@@ -50,24 +50,16 @@ use anyhow::{Result, Context};
 // The former is useful when streaming to client directly, the latter is useful to extract an image
 // on disk.
 //
-// Streaming to client is done by buffering the entire image in memory, and let client consume it.
-// XXX Performance isn't that great due to the memory copy in our address space. To improve
-// performance, we could splice() shard pipe data to client directly. This is difficult as client
-// doesn't read the image files in the same order as they are produced. For example, inventory.img
-// is written last in the image, but is read first. One way to go around this issue is to reserve
-// a shard during capture for all small image files (pretty much all except pages, ghost files, and
-// fs.tar). In addition, we might have to rewrite some part of client to restore these large files in
-// the same order as they were produced. It might be difficult to preserve this guarantee forever,
-// so it would be wise to keep our in-memory buffering implementation anyways.
+// Streaming to client buffers the image in memfds because client requests files in a different
+// order from capture (for example, inventory.img is written last but read first). GPU images are
+// handed to client as memfds; other images are spliced into the client's pipes.
 
-/// We are not doing zero-copy transfers to client (yet), we have to be mindful of CPU caches.
-/// If we were doing shard to client splices, we could bump the capacity to 4MB.
+/// Capacity for pipes used to serve non-GPU images and external files.
 #[allow(clippy::identity_op)]
 const CLIENT_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 /// Data comes in a stream of chunks, which can be as large as 256KB (from capture.rs).
 /// We use 512KB to have two chunks in to avoid stalling the shards.
-/// Making this buffer bigger would most likely trash CPU caches.
 const SHARD_PIPE_DESIRED_CAPACITY: i32 = 512*KB as i32;
 
 struct Shard {
@@ -301,11 +293,11 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
     }
 }
 
-/// `serve_img()` serves the in-memory image store to Client.
+/// `serve_img()` serves the memfd-backed image store to Client.
 fn serve_img(
     images_dir: &Path,
     progress_pipe: &mut fs::File,
-    mem_store: &mut image_store::mem::Store,
+    mem_store: &mut image_store::memfd::Store,
 ) -> Result<()>
 {
     let listener = Listener::bind_for_restore(images_dir)?;
@@ -323,7 +315,7 @@ fn serve_img(
     let mut filenames_of_sent_files = HashSet::new();
 
     let epoll_capacity = 16;
-    while let Some((_poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
+    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;
@@ -346,11 +338,16 @@ fn serve_img(
                             Some(memory_file) => {
                                 filenames_of_sent_files.insert(filename.clone());
                                 client.send_file_reply(true)?; // true means that the file exists.
-                                let mut pipe = client.recv_pipe()?;
-                                // Try setting the pipe capacity. Failing is okay.
-                                let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-                                memory_file.drain(&mut pipe)
-                                    .with_context(|| format!("while serving file {}", &filename))?;
+                                if filename.starts_with("gpu-") {
+                                    client.send_memfd(memory_file)
+                                        .with_context(|| format!("while serving file {}", &filename))?;
+                                } else {
+                                    let mut pipe = client.recv_pipe()?;
+                                    // Try setting the pipe capacity. Failing is okay.
+                                    let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
+                                    image_store::memfd::drain(memory_file, &mut pipe)
+                                        .with_context(|| format!("while serving file {}", &filename))?;
+                                }
                             }
                             None => {
                                 // If we keep the image file in our process, Client will also
@@ -365,7 +362,7 @@ fn serve_img(
                         }
                     }
                     None => {
-                        // Do nothing.
+                        poller.remove(poll_key)?;
                     }
                 }
             }
@@ -420,7 +417,7 @@ pub fn serve(images_dir: &Path,
 {
     create_dir_all(images_dir)?;
 
-    let mut mem_store = image_store::mem::Store::default();
+    let mut mem_store = image_store::memfd::Store::default();
     drain_shards_into_img_store(&mut mem_store, &mut progress_pipe, shard_pipes, ext_file_pipes)?;
     patch_img(&mut mem_store, tcp_listen_remaps)?;
     serve_img(images_dir, &mut progress_pipe, &mut mem_store)?;

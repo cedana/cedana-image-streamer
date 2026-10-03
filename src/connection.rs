@@ -17,10 +17,10 @@
 //  limitations under the License.
 
 use std::{
-    fs, os::unix::{io::{AsRawFd, FromRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, io::Seek, os::unix::{io::{AsRawFd, FromRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
-    criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
+    criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd, send_fd}
 };
 use anyhow::{Result, Context};
 
@@ -95,6 +95,12 @@ impl Connection {
         let file = unsafe { fs::File::from_raw_fd(fd) };
         ensure!(file.metadata()?.is_file(), "fd {} is not a regular file (expected a memfd)", fd);
         Ok(file)
+    }
+
+    /// Hands a fully populated GPU image memfd to the restore client at offset zero.
+    pub fn send_memfd(&mut self, mut file: fs::File) -> Result<()> {
+        file.rewind().context("Failed to rewind memfd before sending")?;
+        send_fd(&mut self.socket, file.as_raw_fd())
     }
 
     /// During restore, client requests image files that may or may not exist.
