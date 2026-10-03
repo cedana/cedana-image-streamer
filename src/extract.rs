@@ -333,21 +333,31 @@ fn serve_img(
                         // List all files in the image store.
                         client.send_file_list_reply(mem_store.list(pattern))?;
                     }
+                    // GPU files are handed over as memfds, which share pages rather than copying
+                    // them, so they stay in the store and may be requested any number of times:
+                    // with GPU dedup, every worker maps the owner files of its peers.
+                    Some(filename) if filename.starts_with("gpu-") => {
+                        match mem_store.get(&filename) {
+                            Some(memory_file) => {
+                                client.send_file_reply(true)?; // true means that the file exists.
+                                let memory_file = memory_file.try_clone()
+                                    .with_context(|| format!("while serving file {}", &filename))?;
+                                client.send_memfd(memory_file)
+                                    .with_context(|| format!("while serving file {}", &filename))?;
+                            }
+                            None => client.send_file_reply(false)?,
+                        }
+                    }
                     Some(filename) => {
                         match mem_store.remove(&filename) {
                             Some(memory_file) => {
                                 filenames_of_sent_files.insert(filename.clone());
                                 client.send_file_reply(true)?; // true means that the file exists.
-                                if filename.starts_with("gpu-") {
-                                    client.send_memfd(memory_file)
-                                        .with_context(|| format!("while serving file {}", &filename))?;
-                                } else {
-                                    let mut pipe = client.recv_pipe()?;
-                                    // Try setting the pipe capacity. Failing is okay.
-                                    let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-                                    image_store::memfd::drain(memory_file, &mut pipe)
-                                        .with_context(|| format!("while serving file {}", &filename))?;
-                                }
+                                let mut pipe = client.recv_pipe()?;
+                                // Try setting the pipe capacity. Failing is okay.
+                                let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
+                                image_store::memfd::drain(memory_file, &mut pipe)
+                                    .with_context(|| format!("while serving file {}", &filename))?;
                             }
                             None => {
                                 // If we keep the image file in our process, Client will also

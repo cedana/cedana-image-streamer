@@ -24,6 +24,10 @@ impl Store {
         self.files.remove(filename)
     }
 
+    pub fn get(&self, filename: &str) -> Option<&fs::File> {
+        self.files.get(filename)
+    }
+
     pub fn list(&self, pattern: &str) -> Vec<String> {
         list_filenames(self.files.keys().map(|filename| filename.as_ref()), pattern)
     }

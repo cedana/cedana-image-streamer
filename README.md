@@ -26,8 +26,10 @@ end of a pipe. Both inputs use the same shard format for extraction and restore.
 During `serve`, buffered image files are stored in memfds. After the usual
 "file exists" reply on `streamer-serve.sock`, a `gpu-` request receives the fully
 populated memfd directly via `SCM_RIGHTS`, positioned at offset zero. The client
-does not send a pipe for these requests. Other filenames retain the pipe-based
-restore protocol.
+does not send a pipe for these requests, and may request the same `gpu-` file more
+than once (GPU dedup restores map peer workers' files); the memfd is shared, not
+copied. Other filenames retain the pipe-based restore protocol and may be requested
+only once.
 
 License
 -------

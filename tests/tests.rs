@@ -255,7 +255,7 @@ mod basic {
 
 mod gpu_memfd {
     use super::*;
-    use std::{fs::File, io::Seek};
+    use std::{fs::File, io::Seek, os::unix::fs::MetadataExt};
     use nix::sys::memfd::{memfd_create, MFdFlags};
     use nix::fcntl::{fcntl, FcntlArg};
 
@@ -342,12 +342,22 @@ mod gpu_memfd {
                     assert_eq!(memfd.metadata()?.len(), data.len() as u64);
                     assert_eq!(memfd.stream_position()?, 0, "Restored memfd must start at offset zero");
                     self.restored_memfds.push((filename.clone(), memfd));
+                    // A GPU file can be requested again (dedup: peers map each other's owner
+                    // files); the second request yields the same file, not an error.
+                    let again = restore.criu.maybe_read_img_memfd(filename)?
+                        .expect("GPU image must still be served on a repeat request");
+                    assert_eq!(again.metadata()?.len(), data.len() as u64);
+                    assert_eq!(again.metadata()?.ino(), self.restored_memfds.last().unwrap().1
+                               .metadata()?.ino(), "Repeat request must share the same memfd");
                 } else {
                     assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
                                "File data content mismatch for {}", filename);
                 }
             }
-            assert!(restore.criu.list_img_files("*")?.is_empty());
+            // Pipe-served files leave the store once sent; GPU memfds stay for repeat requests.
+            let remaining = restore.criu.list_img_files("*")?;
+            assert_eq!(remaining.len(), self.memfds.len());
+            assert!(remaining.iter().all(|name| name.starts_with("gpu-")));
             Ok(())
         }
 
