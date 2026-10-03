@@ -246,6 +246,97 @@ mod basic {
     }
 }
 
+mod gpu_memfd {
+    use super::*;
+    use std::{fs::File, io::Seek};
+    use nix::sys::memfd::{memfd_create, MFdFlags};
+
+    struct Test {
+        temp_dir: TempDir,
+        files: Vec<(String, Vec<u8>)>,
+        memfds: Vec<File>,
+        serve_image: bool,
+    }
+
+    impl Test {
+        fn new(serve_image: bool) -> Self {
+            Self {
+                temp_dir: TempDir::new().expect("Failed to create temp dir"),
+                files: vec![
+                    ("gpu-empty.img".to_string(), Vec::new()),
+                    ("gpu-small.img".to_string(), get_rand_vec(19)),
+                    ("gpu-large.img".to_string(), get_rand_vec(2*MB + 37)),
+                ],
+                memfds: Vec::new(),
+                serve_image,
+            }
+        }
+    }
+
+    impl TestImpl for Test {
+        fn images_dir(&self) -> PathBuf { self.temp_dir.path().to_path_buf() }
+        fn serve_image(&mut self) -> bool { self.serve_image }
+        fn num_shards(&self) -> usize { if self.serve_image { 4 } else { 1 } }
+
+        fn send_img_files(&mut self, checkpoint: &mut CheckpointContext) -> Result<()> {
+            // Keep a pipe pending while memfds are processed on the same connection.
+            let mut pipe = checkpoint.criu.write_img_file("gpu.img")?;
+            pipe.write_all(b"pipe before memfds")?;
+
+            for (filename, data) in &self.files {
+                let mut memfd = File::from(memfd_create(filename.as_str(), MFdFlags::MFD_CLOEXEC)?);
+                memfd.write_all(data)?;
+                // Leave the shared offset at EOF and retain the sender's descriptor.
+                checkpoint.criu.send_img_memfd(filename, &memfd)?;
+                self.memfds.push(memfd);
+            }
+
+            pipe.write_all(b" and after memfds")?;
+            drop(pipe);
+            self.files.push(("gpu.img".to_string(), b"pipe before memfds and after memfds".to_vec()));
+            checkpoint.criu.write_img_file("ordinary.img")?.write_all(b"ordinary pipe")?;
+            self.files.push(("ordinary.img".to_string(), b"ordinary pipe".to_vec()));
+            Ok(())
+        }
+
+        fn after_finish_checkpoint(&mut self, _stats: &Stats) -> Result<()> {
+            for (memfd, (_, data)) in self.memfds.iter_mut().zip(&self.files) {
+                assert_eq!(memfd.stream_position()?, data.len() as u64,
+                           "Capture changed the sender's memfd offset");
+            }
+            Ok(())
+        }
+
+        fn after_finish_image_extraction(&mut self, _stats: &Stats) -> Result<()> {
+            if !self.serve_image {
+                for (filename, data) in &self.files {
+                    assert_eq!(&std::fs::read(self.images_dir().join(filename))?, data,
+                               "File data content mismatch for {}", filename);
+                }
+            }
+            Ok(())
+        }
+
+        fn recv_img_files(&mut self, restore: &mut RestoreContext) -> Result<()> {
+            for (filename, data) in &self.files {
+                assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
+                           "File data content mismatch for {}", filename);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn serve() -> Result<()> {
+        Test::new(true).run()
+    }
+
+    #[test]
+    fn extract_to_disk() -> Result<()> {
+        Test::new(false).run()
+    }
+}
+
 mod list_files {
     use super::*;
 

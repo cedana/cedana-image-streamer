@@ -18,7 +18,7 @@
 
 use std::{
     collections::{BinaryHeap},
-    os::unix::io::AsRawFd,
+    os::unix::io::{AsRawFd, AsFd},
     time::Instant,
     cmp::{min, max},
     path::Path,
@@ -35,12 +35,14 @@ use crate::{
     image::marker,
     impl_ord_by,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
+use nix::fcntl::{splice, SpliceFFlags};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
-// contains the filename. Immediately after this message, it sends a file descriptor of a pipe
-// which we can use to receive the content of the corresponding file. We stream the
+// contains the filename. Immediately after this message, it sends a file descriptor of a pipe,
+// or a populated memfd for filenames starting with "gpu-", from which we receive the content of
+// the corresponding file. We stream the
 // content of these image files to an array of outputs, called shards. The shards are typically
 // a compression and upload stage (e.g., `lz4 | aws s3 cp - s3://destination`). The number of
 // shards is typically 4, and less than 32. Image file sizes can vary widely (1KB to +10GB) and are
@@ -75,8 +77,11 @@ const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 /// An `ImageFile` represents a file coming from client.
 /// The complete client image is comprised of many of these files.
 struct ImageFile {
-    /// Incoming pipe from client
-    pipe: UnixPipe,
+    /// Incoming pipe or memfd from client
+    file: fs::File,
+    /// Memfds are read from the start with an explicit offset, independent of the sender's offset.
+    /// Pipes use their normal streaming position instead.
+    memfd_offset: Option<libc::loff_t>,
     /// Associated filename (e.g., "pages-3.img")
     filename: Rc<str>,
 }
@@ -86,7 +91,28 @@ impl ImageFile {
         // Try setting the pipe capacity. Failing is okay, it's just for better performance.
         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
         let filename = Rc::from(filename);
-        Self { pipe, filename }
+        Self { file: pipe, memfd_offset: None, filename }
+    }
+
+    pub fn new_memfd(filename: String, file: fs::File) -> Self {
+        Self { file, memfd_offset: Some(0), filename: Rc::from(filename) }
+    }
+
+    fn splice_all(&mut self, dst: &mut UnixPipe, len: usize) -> Result<()> {
+        match self.memfd_offset.as_mut() {
+            None => self.file.splice_all(dst, len),
+            Some(offset) => {
+                let mut remaining = len;
+                while remaining > 0 {
+                    let written = splice(self.file.as_fd(), Some(&mut *offset), dst.as_fd(), None,
+                                         remaining, SpliceFFlags::SPLICE_F_MORE)
+                        .with_context(|| format!("Failed to splice memfd for {}", self.filename))?;
+                    ensure!(written > 0, "Reached EOF during splice() for {}", self.filename);
+                    remaining -= written;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -122,7 +148,7 @@ impl Shard {
 impl_ord_by!(Shard, |a: &Self, b: &Self| a.remaining_space.cmp(&b.remaining_space)
     .then(a.pipe.as_raw_fd().cmp(&b.pipe.as_raw_fd())));
 
-/// The image serializer reads data from client's image files pipes, chunks the data, and writes into
+/// The image serializer reads data from client's image files, chunks the data, and writes into
 /// shard pipes. Each chunk is written to the shard that has the most room available in its pipe.
 /// We keep track of which shard has the most room with a binary heap.
 /// Chunks are ordered by a sequence number. Semantically, the sequence number should be per image
@@ -209,7 +235,7 @@ impl<'a> ImageSerializer<'a> {
 
         // 2) and its associated data, if specified
         if let Some((img_file, _)) = chunk.data {
-            img_file.pipe.splice_all(&mut shard.pipe, data_size as usize)?;
+            img_file.splice_all(&mut shard.pipe, data_size as usize)?;
         }
 
         shard.bytes_written += marker_size as u64 + data_size as u64;
@@ -237,19 +263,28 @@ impl<'a> ImageSerializer<'a> {
 
     /// Returns false if EOF of img_file is reached, true otherwise.
     pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
-        let mut readable_len = img_file.pipe.fionread()?;
-
-        // This code is only invoked when the poller reports that the image file's pipe is readable
-        // (or errored), which is why we can detect EOF when fionread() returns 0.
-        let is_eof = readable_len == 0;
+        let (mut readable_len, is_eof) = match img_file.memfd_offset {
+            // A memfd is already populated when received. Drain its entire contents and emit EOF.
+            Some(offset) => {
+                let remaining = img_file.file.metadata()?.len().checked_sub(offset as u64)
+                    .context("Memfd was truncated during capture")?;
+                (remaining, true)
+            }
+            None => {
+                let readable_len = img_file.file.fionread()? as u64;
+                // Pipes are only drained when epoll reports readability (or an error), so a
+                // zero fionread() result indicates EOF.
+                (readable_len, readable_len == 0)
+            }
+        };
 
         self.maybe_write_filename_marker(img_file)?;
 
         while readable_len > 0 {
-            let data_size = min(readable_len, self.chunk_max_data_size());
+            let data_size = min(readable_len, self.chunk_max_data_size() as u64) as i32;
             let marker = self.gen_marker(marker::Body::FileData(data_size as u32));
             self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) })?;
-            readable_len -= data_size;
+            readable_len -= data_size as u64;
         }
 
         if is_eof {
@@ -298,7 +333,7 @@ pub fn capture(
 
     for (filename, pipe) in ext_file_pipes {
         let img_file = ImageFile::new(filename, pipe);
-        poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+        poller.add(img_file.file.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
     }
 
     // Used to compute transfer speed. But the real start is when we call
@@ -310,7 +345,8 @@ pub fn capture(
     let mut img_serializer = ImageSerializer::new(&mut shards, shard_pipe_capacity);
 
     // Process all inputs (ext files, client's connection, and client's files) until they reach EOF.
-    // As client requests to write files, we receive new unix pipes that are added to the poller.
+    // As client requests to write files, pipes are added to the poller. Memfds are drained directly
+    // because regular files cannot be monitored by epoll.
     // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
     // connection is typically at most 2.
     let epoll_capacity = 16;
@@ -340,10 +376,16 @@ pub fn capture(
                             });
                         }
 
-                        let pipe = client.recv_pipe()?;
-                        let img_file = ImageFile::new(filename, pipe);
-                        poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file),
-                                   EpollFlags::EPOLLIN)?;
+                        if filename.starts_with("gpu-") {
+                            let memfd = client.recv_memfd()?;
+                            let mut img_file = ImageFile::new_memfd(filename, memfd);
+                            img_serializer.drain_img_file(&mut img_file)?;
+                        } else {
+                            let pipe = client.recv_pipe()?;
+                            let img_file = ImageFile::new(filename, pipe);
+                            poller.add(img_file.file.as_raw_fd(), PollType::ImageFile(img_file),
+                                       EpollFlags::EPOLLIN)?;
+                        }
                     }
                     None => {
                         // We are done receiving file requests. We can close the socket.

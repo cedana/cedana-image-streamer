@@ -17,7 +17,7 @@
 //  limitations under the License.
 
 use std::{
-    fs, os::unix::{io::{AsRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, os::unix::{io::{AsRawFd, FromRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
     criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
@@ -86,6 +86,15 @@ impl Connection {
     /// Returns the data pipe that is used to transfer the file.
     pub fn recv_pipe(&mut self) -> Result<UnixPipe> {
         UnixPipe::new(recv_fd(&mut self.socket)?)
+    }
+
+    /// Returns a populated memfd that is used to transfer a GPU image file.
+    pub fn recv_memfd(&mut self) -> Result<fs::File> {
+        let fd = recv_fd(&mut self.socket)?;
+        // SAFETY: recv_fd() returns a new descriptor whose ownership is transferred to us.
+        let file = unsafe { fs::File::from_raw_fd(fd) };
+        ensure!(file.metadata()?.is_file(), "fd {} is not a regular file (expected a memfd)", fd);
+        Ok(file)
     }
 
     /// During restore, client requests image files that may or may not exist.

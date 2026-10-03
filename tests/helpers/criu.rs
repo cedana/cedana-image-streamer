@@ -62,6 +62,11 @@ impl Criu {
         Ok(pipe_w)
     }
 
+    pub fn send_img_memfd(&mut self, filename: &str, file: &std::fs::File) -> Result<()> {
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: filename.to_string() })?;
+        send_fd(&mut self.socket, file.as_raw_fd())
+    }
+
     pub fn maybe_read_img_file(&mut self, filename: &str) -> Result<Option<UnixPipe>> {
         let filename = filename.to_string();
         pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename })?;

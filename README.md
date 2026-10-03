@@ -18,10 +18,14 @@ make
 
 For installation see [locally built plugins](https://docs.cedana.ai/daemon/get-started/plugins#locally-built-plugins). For usage, check out [checkpoint/restore streaming](https://docs.cedana.ai/daemon/guides/cr-4).
 
+During capture, each image request on `streamer-capture.sock` is followed by a file
+descriptor. Filenames starting with `gpu-` must supply a fully populated memfd;
+the streamer reads its contents from offset zero. Other filenames supply the read
+end of a pipe. Both inputs use the same shard format for extraction and restore.
+
 License
 -------
 cedana-image-streamer is licensed under the [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0).
 
 criu-image-streamer is originally licensed under the
 [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0).
-
