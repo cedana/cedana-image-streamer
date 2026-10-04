@@ -52,9 +52,10 @@ use anyhow::{Result, Context};
 //
 // Streaming to client buffers the image in memfds because client requests files in a different
 // order from capture (for example, inventory.img is written last but read first). GPU images are
-// handed to client as memfds; other images are spliced into the client's pipes.
+// handed to client as memfds, except gpu-hostmem-metadata-*; those and other images are spliced
+// into the client's pipes.
 
-/// Capacity for pipes used to serve non-GPU images and external files.
+/// Capacity for pipes used to serve images and external files.
 #[allow(clippy::identity_op)]
 const CLIENT_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
@@ -333,10 +334,12 @@ fn serve_img(
                         // List all files in the image store.
                         client.send_file_list_reply(mem_store.list(pattern))?;
                     }
-                    // GPU files are handed over as memfds, which share pages rather than copying
-                    // them, so they stay in the store and may be requested any number of times:
-                    // with GPU dedup, every worker maps the owner files of its peers.
-                    Some(filename) if filename.starts_with("gpu-") => {
+                    // GPU files other than hostmem metadata are handed over as memfds, which
+                    // share pages rather than copying them, so they stay in the store and may be
+                    // requested any number of times: with GPU dedup, every worker maps the owner
+                    // files of its peers. Hostmem metadata uses the pipe protocol below.
+                    Some(filename) if filename.starts_with("gpu-")
+                        && !filename.starts_with("gpu-hostmem-metadata-") => {
                         match mem_store.get(&filename) {
                             Some(memory_file) => {
                                 client.send_file_reply(true)?; // true means that the file exists.

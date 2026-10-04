@@ -68,7 +68,7 @@ impl Criu {
     }
 
     pub fn maybe_read_img_file(&mut self, filename: &str) -> Result<Option<UnixPipe>> {
-        if filename.starts_with("gpu-") {
+        if filename.starts_with("gpu-") && !filename.starts_with("gpu-hostmem-metadata-") {
             return self.maybe_read_img_memfd(filename);
         }
         let filename = filename.to_string();

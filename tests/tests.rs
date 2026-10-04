@@ -255,7 +255,7 @@ mod basic {
 
 mod gpu_memfd {
     use super::*;
-    use std::{fs::File, io::Seek, os::unix::fs::MetadataExt};
+    use std::{fs::File, io::Seek, os::unix::fs::{FileTypeExt, MetadataExt}};
     use nix::sys::memfd::{memfd_create, MFdFlags};
     use nix::fcntl::{fcntl, FcntlArg};
 
@@ -275,6 +275,11 @@ mod gpu_memfd {
                     ("gpu-empty.img".to_string(), Vec::new()),
                     ("gpu-small.img".to_string(), get_rand_vec(19)),
                     ("gpu-large.img".to_string(), get_rand_vec(2*MB + 37)),
+                    ("gpu-hostmem-metadata-empty.img".to_string(), Vec::new()),
+                    ("gpu-hostmem-metadata-1.img".to_string(), get_rand_vec(19)),
+                    ("gpu-hostmem-metadata-2.img".to_string(), get_rand_vec(2*MB + 37)),
+                    ("gpu-hostmem-metadata.img".to_string(), get_rand_vec(19)),
+                    ("gpu-hostmem-metadatax-1.img".to_string(), get_rand_vec(19)),
                 ],
                 memfds: Vec::new(),
                 restored_memfds: Vec::new(),
@@ -331,9 +336,17 @@ mod gpu_memfd {
             let listed = restore.criu.list_img_files("gpu-*")?;
             assert_eq!(listed.len(), self.memfds.len());
             assert!(restore.criu.maybe_read_img_memfd("gpu-missing.img")?.is_none());
+            assert!(restore.criu.maybe_read_img_file("gpu-hostmem-metadata-missing.img")?.is_none());
 
             for (filename, data) in &self.files {
-                if filename.starts_with("gpu-") {
+                if filename.starts_with("gpu-hostmem-metadata-") {
+                    let mut pipe = restore.criu.read_img_file(filename)?;
+                    assert!(pipe.metadata()?.file_type().is_fifo(),
+                            "Hostmem metadata must be served over a pipe");
+                    let mut buf = Vec::new();
+                    pipe.read_to_end(&mut buf)?;
+                    assert_eq!(&buf, data, "File data content mismatch for {}", filename);
+                } else if filename.starts_with("gpu-") {
                     let mut memfd = restore.criu.maybe_read_img_memfd(filename)?
                         .expect("GPU image is missing");
                     // F_GET_SEALS distinguishes memfds from pipes and ordinary disk files.
@@ -356,8 +369,9 @@ mod gpu_memfd {
             }
             // Pipe-served files leave the store once sent; GPU memfds stay for repeat requests.
             let remaining = restore.criu.list_img_files("*")?;
-            assert_eq!(remaining.len(), self.memfds.len());
-            assert!(remaining.iter().all(|name| name.starts_with("gpu-")));
+            assert_eq!(remaining.len(), self.restored_memfds.len());
+            assert!(remaining.iter().all(|name| name.starts_with("gpu-")
+                && !name.starts_with("gpu-hostmem-metadata-")));
             Ok(())
         }
 
