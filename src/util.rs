@@ -62,7 +62,6 @@ pub fn pb_read_next<S: Read, T: Message + Default>(src: &mut S) -> Result<Option
         None => None,
         Some(mut size_buf) => {
             let size = size_buf.get_u32_le() as usize;
-            assert!(size < 10*KB, "Would read a protobuf of size >10KB. Something is wrong");
             let buf = read_bytes_next(src, size)?.ok_or_else(|| anyhow!(EOF_ERR_MSG))?;
             let bytes_read = size_of::<u32>() + size_buf.len() + buf.len();
             Some((T::decode(buf)?, bytes_read))
