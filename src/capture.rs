@@ -124,13 +124,9 @@ impl ImageFile {
                 let len = pipe.fionread()? as u64;
                 Ok((len, len == 0))
             }
-            // A memfd is already populated when received. Drain its entire contents and emit EOF.
-            Self::Memfd { memfd, .. } => {
-                let mut file = memfd.as_file();
-                let remaining = file.metadata()?.len().checked_sub(file.stream_position()?)
-                    .context("Memfd was truncated during capture")?;
-                Ok((remaining, true))
-            }
+            // A memfd is already populated and rewound when received. Drain its entire contents
+            // and emit EOF.
+            Self::Memfd { memfd, .. } => Ok((memfd.as_file().metadata()?.len(), true)),
         }
     }
 
