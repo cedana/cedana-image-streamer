@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{ImageStore, list_filenames};
+use super::ImageStore;
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::{collections::HashMap, fs, io::Seek};
 use nix::{
     fcntl::{fallocate, FallocateFlags},
@@ -28,8 +29,28 @@ impl Store {
         self.files.get(filename)
     }
 
-    pub fn list(&self, pattern: &str) -> Vec<String> {
-        list_filenames(self.files.keys().map(|filename| filename.as_ref()), pattern)
+    /// Returns the filenames matching the glob `pattern`. `*` and `?` are the only
+    /// wildcards. An empty pattern matches everything, an invalid pattern matches nothing.
+    pub fn list_files(&self, pattern: &str) -> Vec<String> {
+        let mut regex_pattern = String::from("^");
+        for ch in pattern.chars() {
+            match ch {
+                '*' => regex_pattern.push_str(".*"),
+                '?' => regex_pattern.push('.'),
+                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                    regex_pattern.push('\\');
+                    regex_pattern.push(ch);
+                }
+                _ => regex_pattern.push(ch),
+            }
+        }
+        regex_pattern.push_str(if pattern.is_empty() { ".*$" } else { "$" });
+
+        let Ok(re) = Regex::new(&regex_pattern) else { return Vec::new() };
+        self.files.keys()
+            .filter(|filename| re.is_match(filename))
+            .map(|filename| filename.to_string())
+            .collect()
     }
 }
 

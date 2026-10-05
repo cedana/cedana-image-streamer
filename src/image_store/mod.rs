@@ -35,31 +35,6 @@ use crate::unix_pipe::UnixPipe;
 // filename. CRIU can generate a lot of files (e.g., one per checkpointed application thread).
 // See the `restore_mem_usage` integration test for userspace memory overhead.
 
-fn list_filenames<'a>(filenames: impl Iterator<Item = &'a str>, pattern: &str) -> Vec<String> {
-    if pattern.is_empty() {
-        return filenames.map(str::to_string).collect();
-    }
-
-    let mut regex_pattern = String::from("^");
-    for ch in pattern.chars() {
-        match ch {
-            '*' => regex_pattern.push_str(".*"),
-            '?' => regex_pattern.push('.'),
-            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                regex_pattern.push('\\');
-                regex_pattern.push(ch);
-            }
-            _ => regex_pattern.push(ch),
-        }
-    }
-    regex_pattern.push('$');
-
-    match regex::Regex::new(&regex_pattern) {
-        Ok(re) => filenames.filter(|filename| re.is_match(filename)).map(str::to_string).collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
 pub trait ImageStore {
     type File: ImageFile;
     /// `create()` returns a `File`, which can be written to.

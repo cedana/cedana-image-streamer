@@ -103,12 +103,12 @@ pub fn recv_fd(socket: &mut UnixStream) -> Result<RawFd> {
 }
 
 pub fn send_fd(socket: &mut UnixStream, fd: RawFd) -> Result<()> {
-    let sent = sendmsg::<()>(socket.as_raw_fd(),
-                            &[IoSlice::new(&[0])],
-                            &[ControlMessage::ScmRights(&[fd])],
-                            MsgFlags::MSG_NOSIGNAL, None)
+    sendmsg::<()>(socket.as_raw_fd(),
+                  &[IoSlice::new(&[0])],
+                  &[ControlMessage::ScmRights(&[fd])],
+                  MsgFlags::empty(),
+                  None)
         .context("Failed to send fd over socket")?;
-    ensure!(sent == 1, "Failed to send fd payload over socket");
     Ok(())
 }
 

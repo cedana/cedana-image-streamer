@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use super::{ImageStore, ImageFile, list_filenames};
+use super::{ImageStore, ImageFile};
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -51,10 +51,6 @@ pub struct Store {
 impl Store {
     pub fn remove(&mut self, filename: &str) -> Option<File> {
         self.files.remove(filename)
-    }
-
-    pub fn list(&self, pattern: &str) -> Vec<String> {
-        list_filenames(self.files.keys().map(|filename| filename.as_ref()), pattern)
     }
 }
 

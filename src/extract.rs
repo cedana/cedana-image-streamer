@@ -332,7 +332,7 @@ fn serve_img(
                     // check if filename has a wildcard
                     Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
                         // List all files in the image store.
-                        client.send_file_list_reply(mem_store.list(pattern))?;
+                        client.send_file_list_reply(mem_store.list_files(pattern))?;
                     }
                     // GPU files other than hostmem metadata are handed over as memfds, which
                     // share pages rather than copying them, so they stay in the store and may be
