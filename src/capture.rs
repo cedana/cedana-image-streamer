@@ -18,7 +18,7 @@
 
 use std::{
     collections::{BinaryHeap},
-    os::unix::io::{AsRawFd, AsFd, RawFd},
+    os::unix::io::{AsRawFd, AsFd},
     io::Seek,
     time::Instant,
     cmp::{min, max},
@@ -148,15 +148,6 @@ impl ImageFile {
                 }
                 Ok(())
             }
-        }
-    }
-}
-
-impl AsRawFd for ImageFile {
-    fn as_raw_fd(&self) -> RawFd {
-        match self {
-            Self::Pipe { pipe, .. } => pipe.as_raw_fd(),
-            Self::Memfd { memfd, .. } => memfd.as_raw_fd(),
         }
     }
 }
@@ -364,8 +355,9 @@ pub fn capture(
     let listener_key = poller.add(listener.as_raw_fd(), PollType::Listener(listener), EpollFlags::EPOLLIN)?;
 
     for (filename, pipe) in ext_file_pipes {
+        let fd = pipe.as_raw_fd();
         let img_file = ImageFile::new_pipe(filename, pipe);
-        poller.add(img_file.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+        poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
     }
 
     // Used to compute transfer speed. But the real start is when we call
@@ -414,9 +406,9 @@ pub fn capture(
                             img_serializer.drain_img_file(&mut img_file)?;
                         } else {
                             let pipe = client.recv_pipe()?;
+                            let fd = pipe.as_raw_fd();
                             let img_file = ImageFile::new_pipe(filename, pipe);
-                            poller.add(img_file.as_raw_fd(), PollType::ImageFile(img_file),
-                                       EpollFlags::EPOLLIN)?;
+                            poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
                         }
                     }
                     None => {
