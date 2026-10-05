@@ -4,13 +4,10 @@ use super::ImageStore;
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::{collections::HashMap, fs, io::Seek};
-use nix::{
-    fcntl::{fallocate, FallocateFlags},
-    sys::memfd::{memfd_create, MFdFlags},
-};
+use nix::sys::memfd::{memfd_create, MFdFlags};
 use crate::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
-    util::{MB, PAGE_SIZE},
+    util::MB,
 };
 
 /// Stores each image in its own memfd. Shard data is spliced directly into the file,
@@ -72,28 +69,16 @@ impl ImageStore for Store {
     }
 }
 
-/// Transfers a non-GPU file into the client's pipe, releasing storage as it is sent.
+/// Transfers a non-GPU file into the client's pipe. The memfd is freed when `file` is
+/// dropped on return; pages still referenced by the pipe stay alive until the client reads them.
 pub fn drain(mut file: fs::File, dst: &mut UnixPipe) -> Result<()> {
     file.rewind()?;
-    let size = file.metadata()?.len();
-    let mut sent = 0;
-    let mut released = 0;
+    let mut remaining = file.metadata()?.len();
 
-    while sent < size {
-        let chunk_size = (size - sent).min(MB as u64) as usize;
+    while remaining > 0 {
+        let chunk_size = remaining.min(MB as u64) as usize;
         file.splice_all(dst, chunk_size)?;
-        sent += chunk_size as u64;
-
-        // Only punch complete pages: zeroing a partial page could modify data still
-        // referenced by the client's pipe. Full pages remain alive in the pipe until read.
-        let release_end = sent / *PAGE_SIZE as u64 * *PAGE_SIZE as u64;
-        if release_end > released {
-            fallocate(&file,
-                      FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
-                      released as libc::off_t, (release_end - released) as libc::off_t)
-                .context("Failed to release transferred memfd pages")?;
-            released = release_end;
-        }
+        remaining -= chunk_size as u64;
     }
 
     Ok(())

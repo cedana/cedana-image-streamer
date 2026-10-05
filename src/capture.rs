@@ -89,7 +89,7 @@ enum ImageFile {
     /// The client leaves the fd alone once sent, so we rely on its file position for progress.
     Memfd {
         memfd: Memfd,
-        /// Associated filename (e.g., "gpu-mem-3.img")
+        /// Associated filename (e.g., "gpu-mem-3")
         filename: Rc<str>,
     },
 }
