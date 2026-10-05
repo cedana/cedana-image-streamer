@@ -18,7 +18,8 @@
 
 use std::{
     collections::{BinaryHeap},
-    os::unix::io::{AsRawFd, AsFd},
+    os::unix::io::{AsRawFd, AsFd, RawFd},
+    io::Seek,
     time::Instant,
     cmp::{min, max},
     path::Path,
@@ -36,6 +37,7 @@ use crate::{
     impl_ord_by,
 };
 use anyhow::{Context, Result};
+use memfd::Memfd;
 use nix::fcntl::{splice, SpliceFFlags};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
@@ -76,42 +78,85 @@ const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 /// An `ImageFile` represents a file coming from client.
 /// The complete client image is comprised of many of these files.
-struct ImageFile {
-    /// Incoming pipe or memfd from client
-    file: fs::File,
-    /// Memfds are read from the start with an explicit offset, independent of the sender's offset.
-    /// Pipes use their normal streaming position instead.
-    memfd_offset: Option<libc::loff_t>,
-    /// Associated filename (e.g., "pages-3.img")
-    filename: Rc<str>,
+enum ImageFile {
+    /// A pipe that the client streams data into. Drained as epoll reports readability.
+    Pipe {
+        pipe: UnixPipe,
+        /// Associated filename (e.g., "pages-3.img")
+        filename: Rc<str>,
+    },
+    /// A memfd that the client populated before handing it over. Drained in one go.
+    /// The client leaves the fd alone once sent, so we rely on its file position for progress.
+    Memfd {
+        memfd: Memfd,
+        /// Associated filename (e.g., "gpu-pages-3.img")
+        filename: Rc<str>,
+    },
 }
 
 impl ImageFile {
-    pub fn new(filename: String, mut pipe: UnixPipe) -> Self {
+    pub fn new_pipe(filename: String, mut pipe: UnixPipe) -> Self {
         // Try setting the pipe capacity. Failing is okay, it's just for better performance.
         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-        let filename = Rc::from(filename);
-        Self { file: pipe, memfd_offset: None, filename }
+        Self::Pipe { pipe, filename: Rc::from(filename) }
     }
 
-    pub fn new_memfd(filename: String, file: fs::File) -> Self {
-        Self { file, memfd_offset: Some(0), filename: Rc::from(filename) }
+    pub fn new_memfd(filename: String, memfd: Memfd) -> Result<Self> {
+        // The client typically leaves the file position at EOF after populating the memfd.
+        memfd.as_file().rewind()
+            .with_context(|| format!("Failed to rewind memfd for {}", filename))?;
+        Ok(Self::Memfd { memfd, filename: Rc::from(filename) })
+    }
+
+    fn filename(&self) -> &Rc<str> {
+        match self {
+            Self::Pipe { filename, .. } | Self::Memfd { filename, .. } => filename,
+        }
+    }
+
+    /// Returns the number of bytes that can be read right now, and whether the file is at EOF
+    /// once those bytes are consumed.
+    fn readable_len(&self) -> Result<(u64, bool)> {
+        match self {
+            // Pipes are only drained when epoll reports readability (or an error), so a zero
+            // fionread() result indicates EOF.
+            Self::Pipe { pipe, .. } => {
+                let len = pipe.fionread()? as u64;
+                Ok((len, len == 0))
+            }
+            // A memfd is already populated when received. Drain its entire contents and emit EOF.
+            Self::Memfd { memfd, .. } => {
+                let mut file = memfd.as_file();
+                let remaining = file.metadata()?.len().checked_sub(file.stream_position()?)
+                    .context("Memfd was truncated during capture")?;
+                Ok((remaining, true))
+            }
+        }
     }
 
     fn splice_all(&mut self, dst: &mut UnixPipe, len: usize) -> Result<()> {
-        match self.memfd_offset.as_mut() {
-            None => self.file.splice_all(dst, len),
-            Some(offset) => {
+        match self {
+            Self::Pipe { pipe, .. } => pipe.splice_all(dst, len),
+            Self::Memfd { memfd, filename } => {
                 let mut remaining = len;
                 while remaining > 0 {
-                    let written = splice(self.file.as_fd(), Some(&mut *offset), dst.as_fd(), None,
+                    let written = splice(memfd.as_file().as_fd(), None, dst.as_fd(), None,
                                          remaining, SpliceFFlags::SPLICE_F_MORE)
-                        .with_context(|| format!("Failed to splice memfd for {}", self.filename))?;
-                    ensure!(written > 0, "Reached EOF during splice() for {}", self.filename);
+                        .with_context(|| format!("Failed to splice memfd for {}", filename))?;
+                    ensure!(written > 0, "Reached EOF during splice() for {}", filename);
                     remaining -= written;
                 }
                 Ok(())
             }
+        }
+    }
+}
+
+impl AsRawFd for ImageFile {
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            Self::Pipe { pipe, .. } => pipe.as_raw_fd(),
+            Self::Memfd { memfd, .. } => memfd.as_raw_fd(),
         }
     }
 }
@@ -248,7 +293,7 @@ impl<'a> ImageSerializer<'a> {
     fn maybe_write_filename_marker(&mut self, img_file: &ImageFile) -> Result<()> {
         // We avoid repeating the filename on sequential data chunks of the same file for
         // performance. We write the filename only when needed.
-        let filename = &img_file.filename;
+        let filename = img_file.filename();
         match &self.current_filename {
             Some(current_filename) if current_filename == filename => {},
             _ => {
@@ -263,20 +308,7 @@ impl<'a> ImageSerializer<'a> {
 
     /// Returns false if EOF of img_file is reached, true otherwise.
     pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
-        let (mut readable_len, is_eof) = match img_file.memfd_offset {
-            // A memfd is already populated when received. Drain its entire contents and emit EOF.
-            Some(offset) => {
-                let remaining = img_file.file.metadata()?.len().checked_sub(offset as u64)
-                    .context("Memfd was truncated during capture")?;
-                (remaining, true)
-            }
-            None => {
-                let readable_len = img_file.file.fionread()? as u64;
-                // Pipes are only drained when epoll reports readability (or an error), so a
-                // zero fionread() result indicates EOF.
-                (readable_len, readable_len == 0)
-            }
-        };
+        let (mut readable_len, is_eof) = img_file.readable_len()?;
 
         self.maybe_write_filename_marker(img_file)?;
 
@@ -332,8 +364,8 @@ pub fn capture(
     let listener_key = poller.add(listener.as_raw_fd(), PollType::Listener(listener), EpollFlags::EPOLLIN)?;
 
     for (filename, pipe) in ext_file_pipes {
-        let img_file = ImageFile::new(filename, pipe);
-        poller.add(img_file.file.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+        let img_file = ImageFile::new_pipe(filename, pipe);
+        poller.add(img_file.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
     }
 
     // Used to compute transfer speed. But the real start is when we call
@@ -378,12 +410,12 @@ pub fn capture(
 
                         if filename.starts_with("gpu-") {
                             let memfd = client.recv_memfd()?;
-                            let mut img_file = ImageFile::new_memfd(filename, memfd);
+                            let mut img_file = ImageFile::new_memfd(filename, memfd)?;
                             img_serializer.drain_img_file(&mut img_file)?;
                         } else {
                             let pipe = client.recv_pipe()?;
-                            let img_file = ImageFile::new(filename, pipe);
-                            poller.add(img_file.file.as_raw_fd(), PollType::ImageFile(img_file),
+                            let img_file = ImageFile::new_pipe(filename, pipe);
+                            poller.add(img_file.as_raw_fd(), PollType::ImageFile(img_file),
                                        EpollFlags::EPOLLIN)?;
                         }
                     }

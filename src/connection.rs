@@ -17,12 +17,13 @@
 //  limitations under the License.
 
 use std::{
-    fs, io::Seek, os::unix::{io::{AsRawFd, FromRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, io::Seek, os::unix::{io::{AsRawFd, FromRawFd, OwnedFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
     criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd, send_fd}
 };
-use anyhow::{Result, Context};
+use anyhow::{anyhow, Result, Context};
+use memfd::Memfd;
 
 const IMG_STREAMER_CAPTURE_SOCKET_NAME: &str = "streamer-capture.sock";
 const IMG_STREAMER_SERVE_SOCKET_NAME: &str = "streamer-serve.sock";
@@ -89,12 +90,12 @@ impl Connection {
     }
 
     /// Returns a populated memfd that is used to transfer a GPU image file.
-    pub fn recv_memfd(&mut self) -> Result<fs::File> {
+    pub fn recv_memfd(&mut self) -> Result<Memfd> {
         let fd = recv_fd(&mut self.socket)?;
         // SAFETY: recv_fd() returns a new descriptor whose ownership is transferred to us.
-        let file = unsafe { fs::File::from_raw_fd(fd) };
-        ensure!(file.metadata()?.is_file(), "fd {} is not a regular file (expected a memfd)", fd);
-        Ok(file)
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        // `try_from_fd` checks that the fd supports sealing, which only memfds do.
+        Memfd::try_from_fd(owned).map_err(|_| anyhow!("fd {} is not a memfd", fd))
     }
 
     /// Hands a fully populated GPU image memfd to the restore client at offset zero.
