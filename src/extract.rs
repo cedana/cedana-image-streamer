@@ -343,8 +343,6 @@ fn serve_img(
                         match mem_store.get(&filename) {
                             Some(memory_file) => {
                                 client.send_file_reply(true)?; // true means that the file exists.
-                                let memory_file = memory_file.try_clone()
-                                    .with_context(|| format!("while serving file {}", &filename))?;
                                 client.send_memfd(memory_file)
                                     .with_context(|| format!("while serving file {}", &filename))?;
                             }

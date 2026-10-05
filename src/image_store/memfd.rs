@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::ImageStore;
-use anyhow::{Context, Result};
+use super::{ImageStore, ImageFile};
+use anyhow::{ensure, Context, Result};
 use regex::Regex;
-use std::{collections::HashMap, fs, io::Seek};
-use nix::sys::memfd::{memfd_create, MFdFlags};
+use std::{collections::HashMap, io::Seek, os::fd::AsFd};
+use memfd::{Memfd, MemfdOptions};
+use nix::fcntl::{splice, SpliceFFlags};
 use crate::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
     util::MB,
@@ -14,15 +15,15 @@ use crate::{
 /// which can then be handed to the client or spliced into its pipe.
 #[derive(Default)]
 pub struct Store {
-    files: HashMap<Box<str>, fs::File>,
+    files: HashMap<Box<str>, Memfd>,
 }
 
 impl Store {
-    pub fn remove(&mut self, filename: &str) -> Option<fs::File> {
+    pub fn remove(&mut self, filename: &str) -> Option<Memfd> {
         self.files.remove(filename)
     }
 
-    pub fn get(&self, filename: &str) -> Option<&fs::File> {
+    pub fn get(&self, filename: &str) -> Option<&Memfd> {
         self.files.get(filename)
     }
 
@@ -52,14 +53,13 @@ impl Store {
 }
 
 impl ImageStore for Store {
-    type File = fs::File;
+    type File = Memfd;
 
     fn create(&mut self, filename: &str) -> Result<Self::File> {
         // The image filename is kept in the map; a fixed memfd name avoids the kernel's
         // shorter name-length limit imposing a restriction on image filenames.
-        let fd = memfd_create("cedana-image", MFdFlags::MFD_CLOEXEC)
-            .with_context(|| format!("Failed to create memfd for {}", filename))?;
-        Ok(fs::File::from(fd))
+        MemfdOptions::new().create("cedana-image")
+            .with_context(|| format!("Failed to create memfd for {}", filename))
     }
 
     fn insert(&mut self, filename: impl Into<Box<str>>, file: Self::File) {
@@ -69,9 +69,24 @@ impl ImageStore for Store {
     }
 }
 
+impl ImageFile for Memfd {
+    fn write_all_from_pipe(&mut self, shard_pipe: &mut UnixPipe, size: usize) -> Result<()> {
+        let mut remaining = size;
+        while remaining > 0 {
+            let written = splice(shard_pipe.as_fd(), None, self.as_file().as_fd(), None,
+                                 remaining, SpliceFFlags::SPLICE_F_MORE)
+                .context("Failed to splice shard data into memfd")?;
+            ensure!(written > 0, "Reached EOF during splice() from shard");
+            remaining -= written;
+        }
+        Ok(())
+    }
+}
+
 /// Transfers a non-GPU file into the client's pipe. The memfd is freed when `file` is
 /// dropped on return; pages still referenced by the pipe stay alive until the client reads them.
-pub fn drain(mut file: fs::File, dst: &mut UnixPipe) -> Result<()> {
+pub fn drain(file: Memfd, dst: &mut UnixPipe) -> Result<()> {
+    let mut file = file.into_file();
     file.rewind()?;
     let mut remaining = file.metadata()?.len();
 

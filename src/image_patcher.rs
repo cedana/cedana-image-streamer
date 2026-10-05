@@ -68,13 +68,15 @@ fn patch_tcp_listen_remaps(
     let mut tcp_listen_remaps: HashMap<u16, u16> = tcp_listen_remaps.into_iter().collect();
 
     let mut old_files = img_store.remove("files.img")
-        .ok_or_else(|| anyhow!("files.img is missing from the image"))?;
+        .ok_or_else(|| anyhow!("files.img is missing from the image"))?
+        .into_file();
     old_files.rewind()?;
     let mut old_files = BufReader::new(old_files);
     read_criu_img_header(&mut old_files, FILES_MAGIC)?;
 
-    let mut new_files = img_store.create("files.img")?;
-    write_criu_img_header(&mut new_files, FILES_MAGIC)?;
+    let new_files = img_store.create("files.img")?;
+    let mut new_files_writer = new_files.as_file();
+    write_criu_img_header(&mut new_files_writer, FILES_MAGIC)?;
 
     // We take the original "files.img" file (`old_files`), we apply a few
     // transformations, and produce a new "files.img" file (`new_files`).
@@ -103,7 +105,7 @@ fn patch_tcp_listen_remaps(
                 }
             }
         }
-        pb_write(&mut new_files, &file_entry)?;
+        pb_write(&mut new_files_writer, &file_entry)?;
     }
 
     if !tcp_listen_remaps.is_empty() {
@@ -131,13 +133,13 @@ pub fn patch_img(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix::fcntl::{fcntl, FcntlArg};
 
     #[test]
     fn remap_tcp_listen_port_in_memfd_store() -> Result<()> {
         let mut store = image_store::memfd::Store::default();
-        let mut file = store.create("files.img")?;
-        write_criu_img_header(&mut file, FILES_MAGIC)?;
+        let file = store.create("files.img")?;
+        let mut writer = file.as_file();
+        write_criu_img_header(&mut writer, FILES_MAGIC)?;
         let listener = criu::FileEntry {
             id: 1,
             isk: Some(criu::InetSkEntry {
@@ -149,14 +151,13 @@ mod tests {
             ..Default::default()
         };
         let other = criu::FileEntry { id: 2, ..Default::default() };
-        pb_write(&mut file, &listener)?;
-        pb_write(&mut file, &other)?;
+        pb_write(&mut writer, &listener)?;
+        pb_write(&mut writer, &other)?;
         store.insert("files.img", file);
 
         // The replacement port takes more protobuf bytes, requiring a newly written image.
         patch_img(&mut store, vec![(2000, 30000)])?;
-        let mut patched = store.remove("files.img").unwrap();
-        fcntl(&patched, FcntlArg::F_GET_SEALS)?;
+        let mut patched = store.remove("files.img").unwrap().into_file();
         patched.rewind()?;
         read_criu_img_header(&mut patched, FILES_MAGIC)?;
         let mut expected = listener;

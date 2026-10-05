@@ -99,9 +99,9 @@ impl Connection {
     }
 
     /// Hands a fully populated GPU image memfd to the restore client at offset zero.
-    pub fn send_memfd(&mut self, mut file: fs::File) -> Result<()> {
-        file.rewind().context("Failed to rewind memfd before sending")?;
-        send_fd(&mut self.socket, file.as_raw_fd())
+    pub fn send_memfd(&mut self, memfd: &Memfd) -> Result<()> {
+        memfd.as_file().rewind().context("Failed to rewind memfd before sending")?;
+        send_fd(&mut self.socket, memfd.as_raw_fd())
     }
 
     /// During restore, client requests image files that may or may not exist.
