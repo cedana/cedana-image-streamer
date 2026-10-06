@@ -170,6 +170,7 @@ fn do_main() -> Result<()> {
 fn main() {
     if let Err(e) = do_main() {
         eprintln!("cedana-image-streamer Error: {:#}", e);
+        std::process::exit(1);
     }
 }
 

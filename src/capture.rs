@@ -204,7 +204,7 @@ static CHUNK_MARKER_KERNEL_SIZE: &PAGE_SIZE = &PAGE_SIZE;
 
 impl<'a> ImageSerializer<'a> {
     pub fn new(shards: &'a mut [Shard], shard_pipe_capacity: i32) -> Self {
-        assert!(!shards.is_empty());
+        assert!(!shards.is_empty(), "No shards to serialize the image into");
         Self {
             shard_pipe_capacity,
             shards: shards.iter_mut().collect(),

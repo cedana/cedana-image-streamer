@@ -46,7 +46,7 @@ impl MmapBuf {
     }
 
     pub fn resize(&mut self, len: usize) {
-        assert!(len <= self.capacity);
+        assert!(len <= self.capacity, "mmap buffer resized to {} bytes, exceeding capacity of {}", len, self.capacity);
         self.len = len;
     }
 

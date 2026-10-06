@@ -258,7 +258,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
                     .collect();
 
                 let n = poll(&mut poll_fds, PollTimeout::NONE)?;
-                assert!(n > 0); // There should be at least one fd ready.
+                assert!(n > 0, "poll() returned with no ready shard fds");
 
                 poll_fds.iter().enumerate()
                     .filter(|(_, pfd)| !pfd.revents().unwrap().is_empty())

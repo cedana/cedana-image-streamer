@@ -85,7 +85,7 @@ impl<T> Poller<T> {
 
             // We don't use a timeout (None = infinite), and we have events registered (slab is not empty)
             // so we should have a least one fd ready.
-            assert!(num_ready_fds > 0);
+            assert!(num_ready_fds > 0, "epoll_wait() returned with no ready fds");
 
             self.pending_events.truncate(num_ready_fds);
         }
