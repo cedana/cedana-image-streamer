@@ -365,6 +365,8 @@ fn serve_img(
                                 // have a copy of the image file. This uses x2 the memory for an image
                                 // file. For large files like memory pages, we could very much go over
                                 // the machine memory capacity.
+                                eprintln!("Client is requesting the image file `{}` multiple times. \
+                                    This is not allowed for non-gpu files", filename);
                                 ensure!(!filenames_of_sent_files.contains(&filename),
                                     "Client is requesting the image file `{}` multiple times. \
                                     This is not allowed to keep the memory usage low", &filename);
