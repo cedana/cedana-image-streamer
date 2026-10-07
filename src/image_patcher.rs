@@ -17,7 +17,7 @@ use bytes::Buf;
 
 use std::{
     collections::HashMap,
-    io::{BufReader, Read, Seek, Write},
+    io::{BufReader, Read, Write},
     mem::size_of,
 };
 
@@ -67,10 +67,9 @@ fn patch_tcp_listen_remaps(
 
     let mut tcp_listen_remaps: HashMap<u16, u16> = tcp_listen_remaps.into_iter().collect();
 
-    let mut old_files = img_store.remove("files.img")
+    let old_files = img_store.remove("files.img")
         .ok_or_else(|| anyhow!("files.img is missing from the image"))?
         .into_file();
-    old_files.rewind()?;
     let mut old_files = BufReader::new(old_files);
     read_criu_img_header(&mut old_files, FILES_MAGIC)?;
 
@@ -115,7 +114,7 @@ fn patch_tcp_listen_remaps(
               old_tcp_listen_ports, remap_ports_not_found);
     }
 
-    img_store.insert("files.img", new_files);
+    img_store.insert("files.img", new_files)?;
 
     Ok(())
 }
@@ -153,12 +152,11 @@ mod tests {
         let other = criu::FileEntry { id: 2, ..Default::default() };
         pb_write(&mut writer, &listener)?;
         pb_write(&mut writer, &other)?;
-        store.insert("files.img", file);
+        store.insert("files.img", file)?;
 
         // The replacement port takes more protobuf bytes, requiring a newly written image.
         patch_img(&mut store, vec![(2000, 30000)])?;
         let mut patched = store.remove("files.img").unwrap().into_file();
-        patched.rewind()?;
         read_criu_img_header(&mut patched, FILES_MAGIC)?;
         let mut expected = listener;
         expected.isk.as_mut().unwrap().src_port = 30000;

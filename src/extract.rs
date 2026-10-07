@@ -180,7 +180,7 @@ impl<'a, ImgStore: ImageStore> ImageDeserializer<'a, ImgStore> {
             Some(FileEof(true)) => {
                 let (filename, img_file) = self.current_img_file.take()
                     .ok_or_else(|| anyhow!("Unexpected FileEof marker"))?;
-                self.img_store.insert(filename, img_file);
+                self.img_store.insert(filename, img_file)?;
             }
             Some(ImageEof(true)) => {
                 self.mark_image_eof()?;

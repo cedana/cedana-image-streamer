@@ -79,17 +79,12 @@ const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 /// An `ImageFile` represents a file coming from client.
 /// The complete client image is comprised of many of these files.
 enum ImageFile {
-    /// A pipe that the client streams data into. Drained as epoll reports readability.
     Pipe {
         pipe: UnixPipe,
-        /// Associated filename (e.g., "pages-3.img")
         filename: Rc<str>,
     },
-    /// A memfd that the client populated before handing it over. Drained in one go.
-    /// The client leaves the fd alone once sent, so we rely on its file position for progress.
     Memfd {
         memfd: Memfd,
-        /// Associated filename (e.g., "gpu-mem-3")
         filename: Rc<str>,
     },
 }
@@ -102,7 +97,8 @@ impl ImageFile {
     }
 
     pub fn new_memfd(filename: String, memfd: Memfd) -> Result<Self> {
-        // The client typically leaves the file position at EOF after populating the memfd.
+        // The client typically leaves the file position at EOF so rewind it
+        // to the beginning
         memfd.as_file().rewind()
             .with_context(|| format!("Failed to rewind memfd for {}", filename))?;
         Ok(Self::Memfd { memfd, filename: Rc::from(filename) })
@@ -114,18 +110,13 @@ impl ImageFile {
         }
     }
 
-    /// Returns the number of bytes that can be read right now, and whether the file is at EOF
-    /// once those bytes are consumed.
     fn readable_len(&self) -> Result<(u64, bool)> {
         match self {
-            // Pipes are only drained when epoll reports readability (or an error), so a zero
-            // fionread() result indicates EOF.
             Self::Pipe { pipe, .. } => {
                 let len = pipe.fionread()? as u64;
                 Ok((len, len == 0))
             }
-            // A memfd is already populated and rewound when received. Drain its entire contents
-            // and emit EOF.
+            // memfd is fully populated so just return len + EOF
             Self::Memfd { memfd, .. } => Ok((memfd.as_file().metadata()?.len(), true)),
         }
     }
@@ -396,6 +387,8 @@ pub fn capture(
                             });
                         }
 
+                        // depending on the protocol the client might send us a memfd with the
+                        // data or the read end of a pipe
                         match protocol {
                             FileProtocol::SendRecvMemfd => {
                                 let memfd = client.recv_memfd()?;
@@ -406,6 +399,8 @@ pub fn capture(
                                 let pipe = client.recv_pipe()?;
                                 let fd = pipe.as_raw_fd();
                                 let img_file = ImageFile::new_pipe(filename, pipe);
+                                // only add pipes to poller, because memfds arrive fully populated
+                                // with the file contents.
                                 poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
                             }
                         }

@@ -17,7 +17,7 @@
 //  limitations under the License.
 
 use std::{
-    fs, io::Seek, os::unix::{io::{AsRawFd, FromRawFd, OwnedFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, os::unix::{io::{AsRawFd, FromRawFd, OwnedFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
     criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd, send_fd}
@@ -111,11 +111,10 @@ impl Connection {
         Memfd::try_from_fd(owned).map_err(|_| anyhow!("fd {} is not a memfd", fd))
     }
 
-    /// Hands a fully populated image memfd to the restore client at offset zero.
+    /// Hands a fully populated, sealed image memfd to the restore client.
     /// we open a new fd using proc, instead of dup() so that client gets a new file handle
     /// from the kernel and can have their own offset for reading.
     pub fn send_memfd(&mut self, memfd: &Memfd) -> Result<()> {
-        memfd.as_file().rewind().context("Failed to rewind memfd before sending")?;
         // open a new fd using proc and send that over
         send_fd(&mut self.socket, std::fs::File::open(format!("/proc/self/fd/{}", memfd.as_raw_fd()))?.as_raw_fd())
     }

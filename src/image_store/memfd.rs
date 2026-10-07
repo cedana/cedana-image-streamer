@@ -4,7 +4,7 @@ use super::{ImageStore, ImageFile};
 use anyhow::{ensure, Context, Result};
 use regex::Regex;
 use std::{collections::HashMap, io::Seek, os::fd::AsFd};
-use memfd::{Memfd, MemfdOptions};
+use memfd::{FileSeal, Memfd, MemfdOptions};
 use nix::fcntl::{splice, SpliceFFlags};
 use crate::{
     unix_pipe::{UnixPipe, UnixPipeImpl},
@@ -56,16 +56,23 @@ impl ImageStore for Store {
     type File = Memfd;
 
     fn create(&mut self, filename: &str) -> Result<Self::File> {
-        // The image filename is kept in the map; a fixed memfd name avoids the kernel's
-        // shorter name-length limit imposing a restriction on image filenames.
-        MemfdOptions::new().create("cedana-image")
+        MemfdOptions::new().allow_sealing(true).create("cedana-image")
             .with_context(|| format!("Failed to create memfd for {}", filename))
     }
 
-    fn insert(&mut self, filename: impl Into<Box<str>>, file: Self::File) {
+    fn insert(&mut self, filename: impl Into<Box<str>>, file: Self::File) -> Result<()> {
         let filename = filename.into();
         assert!(!self.files.contains_key(&filename), "Image file {} is being overwritten", filename);
+        file.as_file().rewind()
+            .with_context(|| format!("Failed to rewind memfd for {}", filename))?;
+        file.add_seals(&[
+            FileSeal::SealShrink,
+            FileSeal::SealGrow,
+            FileSeal::SealWrite,
+            FileSeal::SealSeal,
+        ]).with_context(|| format!("Failed to seal memfd for {}", filename))?;
         self.files.insert(filename, file);
+        Ok(())
     }
 }
 
@@ -87,7 +94,6 @@ impl ImageFile for Memfd {
 /// dropped on return; pages still referenced by the pipe stay alive until the client reads them.
 pub fn drain(file: Memfd, dst: &mut UnixPipe) -> Result<()> {
     let mut file = file.into_file();
-    file.rewind()?;
     let mut remaining = file.metadata()?.len();
 
     while remaining > 0 {
