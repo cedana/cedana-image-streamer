@@ -24,7 +24,7 @@ use std::{
     fs,
 };
 use crate::{
-    connection::{Listener, Connection},
+    connection::{Listener, Connection, FileProtocol},
     unix_pipe::{UnixPipe, UnixPipeImpl},
     util::*,
     image,
@@ -33,7 +33,7 @@ use crate::{
     image_store,
     image_store::{ImageStore, ImageFile},
     image_patcher::patch_img,
-    poller::Poller, 
+    poller::Poller,
 };
 use nix::{poll::{poll, PollFd, PollFlags, PollTimeout}, sys::epoll::EpollFlags};
 use anyhow::{Result, Context};
@@ -324,53 +324,53 @@ fn serve_img(
             }
             PollType::Client(client) => {
                 match client.read_next_file_request()? {
-                    Some(ref filename) if filename == "stop-listener" => {
+                    Some((ref filename, _)) if filename == "stop-listener" => {
                         // Stop accepting any new connections. Pending files will still be
                         // processed.
                         poller.remove(listener_key)?;
                     }
                     // check if filename has a wildcard
-                    Some(ref pattern) if pattern.contains('*') || pattern.is_empty() => {
+                    Some((ref pattern, _)) if pattern.contains('*') || pattern.is_empty() => {
                         // List all files in the image store.
                         client.send_file_list_reply(mem_store.list_files(pattern))?;
                     }
-                    // GPU files other than hostmem metadata are handed over as memfds, which
-                    // share pages rather than copying them, so they stay in the store and may be
-                    // requested any number of times: with GPU dedup, every worker maps the owner
-                    // files of its peers. Hostmem metadata uses the pipe protocol below.
-                    Some(filename) if filename.starts_with("gpu-")
-                        && !filename.starts_with("gpu-hostmem-metadata-") => {
-                        match mem_store.get(&filename) {
-                            Some(memory_file) => {
-                                client.send_file_reply(true)?; // true means that the file exists.
-                                client.send_memfd(memory_file)
-                                    .with_context(|| format!("while serving file {}", &filename))?;
+                    Some((filename, protocol)) => {
+                        match protocol {
+                            FileProtocol::RecvPipeEnd => {
+                                match mem_store.remove(&filename) {
+                                    Some(memory_file) => {
+                                        filenames_of_sent_files.insert(filename.clone());
+                                        client.send_file_reply(true)?; // true means that the file exists.
+                                        let mut pipe = client.recv_pipe()?;
+                                        // Try setting the pipe capacity. Failing is okay.
+                                        let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
+                                        image_store::memfd::drain(memory_file, &mut pipe)
+                                            .with_context(|| format!("while serving file {}", &filename))?;
+                                    }
+                                    None => {
+                                        // If we keep the image file in our process, Client will also
+                                        // have a copy of the image file. This uses x2 the memory for an image
+                                        // file. For large files like memory pages, we could very much go over
+                                        // the machine memory capacity.
+                                        eprintln!("Client is requesting the image file `{}` multiple times. \
+                                            This is not allowed for non-gpu files", filename);
+                                        ensure!(!filenames_of_sent_files.contains(&filename),
+                                            "Client is requesting the image file `{}` multiple times. \
+                                            This is not allowed to keep the memory usage low", &filename);
+                                        client.send_file_reply(false)?; // false means that the file does not exist.
+                                    }
+                                }
                             }
-                            None => client.send_file_reply(false)?,
-                        }
-                    }
-                    Some(filename) => {
-                        match mem_store.remove(&filename) {
-                            Some(memory_file) => {
-                                filenames_of_sent_files.insert(filename.clone());
-                                client.send_file_reply(true)?; // true means that the file exists.
-                                let mut pipe = client.recv_pipe()?;
-                                // Try setting the pipe capacity. Failing is okay.
-                                let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-                                image_store::memfd::drain(memory_file, &mut pipe)
-                                    .with_context(|| format!("while serving file {}", &filename))?;
-                            }
-                            None => {
-                                // If we keep the image file in our process, Client will also
-                                // have a copy of the image file. This uses x2 the memory for an image
-                                // file. For large files like memory pages, we could very much go over
-                                // the machine memory capacity.
-                                eprintln!("Client is requesting the image file `{}` multiple times. \
-                                    This is not allowed for non-gpu files", filename);
-                                ensure!(!filenames_of_sent_files.contains(&filename),
-                                    "Client is requesting the image file `{}` multiple times. \
-                                    This is not allowed to keep the memory usage low", &filename);
-                                client.send_file_reply(false)?; // false means that the file does not exist.
+                            FileProtocol::SendRecvMemfd => {
+                                match mem_store.get(&filename) {
+                                    // we send memfds as many times as requested
+                                    Some(memory_file) => {
+                                        client.send_file_reply(true)?; // true means that the file exists.
+                                        client.send_memfd(memory_file)
+                                            .with_context(|| format!("while serving file {}", &filename))?;
+                                    }
+                                    None => client.send_file_reply(false)?,
+                                }
                             }
                         }
                     }

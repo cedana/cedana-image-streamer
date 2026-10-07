@@ -77,11 +77,24 @@ pub struct Connection {
     socket: UnixStream,
 }
 
+pub enum FileProtocol {
+    RecvPipeEnd,
+    SendRecvMemfd
+}
+
 impl Connection {
     /// Read and return the next file request. If reached EOF, returns Ok(None).
-    pub fn read_next_file_request(&mut self) -> Result<Option<String>> {
+    pub fn read_next_file_request(&mut self) -> Result<Option<(String, FileProtocol)>> {
         Ok(pb_read_next(&mut self.socket)?
-            .map(|(req, _): (criu::ImgStreamerRequestEntry, _)| req.filename))
+            .map(|(req, _): (criu::ImgStreamerRequestEntry, _)| (req.filename, match req.protocol {
+                Some(p) => {
+                    match p {
+                        1 => FileProtocol::SendRecvMemfd,
+                        _ => FileProtocol::RecvPipeEnd
+                    }
+                },
+                None => FileProtocol::RecvPipeEnd,
+            })))
     }
 
     /// Returns the data pipe that is used to transfer the file.
@@ -89,7 +102,7 @@ impl Connection {
         UnixPipe::new(recv_fd(&mut self.socket)?)
     }
 
-    /// Returns a populated memfd that is used to transfer a GPU image file.
+    /// recieve a memfd from client with the file data.
     pub fn recv_memfd(&mut self) -> Result<Memfd> {
         let fd = recv_fd(&mut self.socket)?;
         // SAFETY: recv_fd() returns a new descriptor whose ownership is transferred to us.
@@ -98,10 +111,13 @@ impl Connection {
         Memfd::try_from_fd(owned).map_err(|_| anyhow!("fd {} is not a memfd", fd))
     }
 
-    /// Hands a fully populated GPU image memfd to the restore client at offset zero.
+    /// Hands a fully populated image memfd to the restore client at offset zero.
+    /// we open a new fd using proc, instead of dup() so that client gets a new file handle
+    /// from the kernel and can have their own offset for reading.
     pub fn send_memfd(&mut self, memfd: &Memfd) -> Result<()> {
         memfd.as_file().rewind().context("Failed to rewind memfd before sending")?;
-        send_fd(&mut self.socket, memfd.as_raw_fd())
+        // open a new fd using proc and send that over
+        send_fd(&mut self.socket, std::fs::File::open(format!("/proc/self/fd/{}", memfd.as_raw_fd()))?.as_raw_fd())
     }
 
     /// During restore, client requests image files that may or may not exist.

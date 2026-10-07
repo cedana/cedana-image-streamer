@@ -29,7 +29,7 @@ use std::{
 };
 use crate::{
     poller::{Poller, EpollFlags},
-    connection::{Listener, Connection},
+    connection::{Listener, Connection, FileProtocol},
     unix_pipe::{UnixPipe, UnixPipeImpl},
     util::*,
     image,
@@ -378,12 +378,12 @@ pub fn capture(
             }
             PollType::Client(client) => {
                 match client.read_next_file_request()? {
-                    Some(ref filename) if filename == "stop-listener" => {
+                    Some((ref filename, _)) if filename == "stop-listener" => {
                         // Stop accepting any new connections. Pending files will still be
                         // processed.
                         poller.remove(listener_key)?;
                     }
-                    Some(filename) => {
+                    Some((filename, protocol)) => {
                         if filename != "cpuinfo.img" {
                             // Once the checkpoint has started, we must notify the controller.
                             // This is useful for our controller to kick tarring the file system as
@@ -396,15 +396,18 @@ pub fn capture(
                             });
                         }
 
-                        if filename.starts_with("gpu-") {
-                            let memfd = client.recv_memfd()?;
-                            let mut img_file = ImageFile::new_memfd(filename, memfd)?;
-                            img_serializer.drain_img_file(&mut img_file)?;
-                        } else {
-                            let pipe = client.recv_pipe()?;
-                            let fd = pipe.as_raw_fd();
-                            let img_file = ImageFile::new_pipe(filename, pipe);
-                            poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+                        match protocol {
+                            FileProtocol::SendRecvMemfd => {
+                                let memfd = client.recv_memfd()?;
+                                let mut img_file = ImageFile::new_memfd(filename, memfd)?;
+                                img_serializer.drain_img_file(&mut img_file)?;
+                            }
+                            FileProtocol::RecvPipeEnd => {
+                                let pipe = client.recv_pipe()?;
+                                let fd = pipe.as_raw_fd();
+                                let img_file = ImageFile::new_pipe(filename, pipe);
+                                poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+                            }
                         }
                     }
                     None => {
