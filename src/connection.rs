@@ -87,13 +87,8 @@ impl Connection {
     pub fn read_next_file_request(&mut self) -> Result<Option<(String, FileProtocol)>> {
         Ok(pb_read_next(&mut self.socket)?
             .map(|(req, _): (criu::ImgStreamerRequestEntry, _)| (req.filename, match req.protocol {
-                Some(p) => {
-                    match p {
-                        1 => FileProtocol::SendRecvMemfd,
-                        _ => FileProtocol::RecvPipeEnd
-                    }
-                },
-                None => FileProtocol::RecvPipeEnd,
+                Some(1) => FileProtocol::SendRecvMemfd,
+                _ => FileProtocol::RecvPipeEnd,
             })))
     }
 

@@ -62,7 +62,7 @@ use anyhow::{Result, Context};
 
 /// We are not doing zero-copy transfers to client (yet), we have to be mindful of CPU caches.
 /// If we were doing shard to client splices, we could bump the capacity to 4MB.
-
+///
 /// Capacity for pipes used to serve images and external files.
 #[allow(clippy::identity_op)]
 const CLIENT_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
@@ -354,7 +354,7 @@ fn serve_img(
                                         // Try setting the pipe capacity. Failing is okay.
                                         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
                                         image_store::memfd::drain(memory_file, &mut pipe)
-                                            .with_context(|| format!("while serving file {}", &filename))?;
+                                            .with_context(|| format!("while serving file {}", filename))?;
                                     }
                                     None => {
                                         // If we keep the image file in our process, Client will also
@@ -365,7 +365,7 @@ fn serve_img(
                                             This is not allowed for non-gpu files", filename);
                                         ensure!(!filenames_of_sent_files.contains(&filename),
                                             "Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed to keep the memory usage low", &filename);
+                                            This is not allowed to keep the memory usage low", filename);
                                         client.send_file_reply(false)?; // false means that the file does not exist.
                                     }
                                 }
@@ -376,7 +376,7 @@ fn serve_img(
                                     Some(memory_file) => {
                                         client.send_file_reply(true)?; // true means that the file exists.
                                         client.send_memfd(memory_file)
-                                            .with_context(|| format!("while serving file {}", &filename))?;
+                                            .with_context(|| format!("while serving file {}", filename))?;
                                     }
                                     None => client.send_file_reply(false)?,
                                 }
