@@ -27,13 +27,14 @@ use crate::unix_pipe::UnixPipe;
 // * `fs::Store`, used to store an image on disk.
 // * `mem::Store`, used to store an image in memory. This is useful to stream the image to
 //   CRIU without touching disk.
-// * `memfd::Store`, used by serve to store images in memfds and transfer GPU descriptors directly.
+// * `memfd::Store`, used by serve to store images in memfds, allowing for directly sending of file descriptors.
 // * `fs_overlay::Store`, used for bypassing certain files (like fs.tar) when extracting to memory.
 //   These special files are passed via the "--ext-files-fds" option on the CLI.
 
 // We use a `Box<str>` instead of `String` for filenames to reduce memory usage by 8 bytes per
 // filename. CRIU can generate a lot of files (e.g., one per checkpointed application thread).
-// See the `restore_mem_usage` integration test for userspace memory overhead.
+// We still have a fairly high memory overhead per file of ~150 bytes. See the `restore_mem_usage`
+// integration test.
 
 pub trait ImageStore {
     type File: ImageFile;

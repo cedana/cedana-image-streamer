@@ -27,8 +27,6 @@ impl Store {
         self.files.get(filename)
     }
 
-    /// Returns the filenames matching the glob `pattern`. `*` and `?` are the only
-    /// wildcards. An empty pattern matches everything, an invalid pattern matches nothing.
     pub fn list_files(&self, pattern: &str) -> Vec<String> {
         let mut regex_pattern = String::from("^");
         for ch in pattern.chars() {
@@ -90,8 +88,7 @@ impl ImageFile for Memfd {
     }
 }
 
-/// Transfers a non-GPU file into the client's pipe. The memfd is freed when `file` is
-/// dropped on return; pages still referenced by the pipe stay alive until the client reads them.
+// handles sending data over pipe, and deletes the file once its fully sent
 pub fn drain(file: Memfd, dst: &mut UnixPipe) -> Result<()> {
     let mut file = file.into_file();
     let mut remaining = file.metadata()?.len();

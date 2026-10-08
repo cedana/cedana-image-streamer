@@ -42,9 +42,8 @@ use nix::fcntl::{splice, SpliceFFlags};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
-// contains the filename. Immediately after this message, it sends a file descriptor of a pipe,
-// or a populated memfd for filenames starting with "gpu-", from which we receive the content of
-// the corresponding file. We stream the
+// contains the filename. Immediately after this message, it sends a file descriptor of a pipe
+// which we can use to receive the content of the corresponding file. We stream the
 // content of these image files to an array of outputs, called shards. The shards are typically
 // a compression and upload stage (e.g., `lz4 | aws s3 cp - s3://destination`). The number of
 // shards is typically 4, and less than 32. Image file sizes can vary widely (1KB to +10GB) and are

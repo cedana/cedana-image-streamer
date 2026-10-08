@@ -50,10 +50,18 @@ use anyhow::{Result, Context};
 // The former is useful when streaming to client directly, the latter is useful to extract an image
 // on disk.
 //
-// Streaming to client buffers the image in memfds because client requests files in a different
-// order from capture (for example, inventory.img is written last but read first). GPU images are
-// handed to client as memfds, except gpu-hostmem-metadata-*; those and other images are spliced
-// into the client's pipes.
+// Streaming to client is done by buffering the entire image in memory, and let client consume it.
+// XXX Performance isn't that great due to the memory copy in our address space. To improve
+// performance, we could splice() shard pipe data to client directly. This is difficult as client
+// doesn't read the image files in the same order as they are produced. For example, inventory.img
+// is written last in the image, but is read first. One way to go around this issue is to reserve
+// a shard during capture for all small image files (pretty much all except pages, ghost files, and
+// fs.tar). In addition, we might have to rewrite some part of client to restore these large files in
+// the same order as they were produced. It might be difficult to preserve this guarantee forever,
+// so it would be wise to keep our in-memory buffering implementation anyways.
+
+/// We are not doing zero-copy transfers to client (yet), we have to be mindful of CPU caches.
+/// If we were doing shard to client splices, we could bump the capacity to 4MB.
 
 /// Capacity for pipes used to serve images and external files.
 #[allow(clippy::identity_op)]
@@ -61,6 +69,7 @@ const CLIENT_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 /// Data comes in a stream of chunks, which can be as large as 256KB (from capture.rs).
 /// We use 512KB to have two chunks in to avoid stalling the shards.
+/// Making this buffer bigger would most likely trash CPU caches.
 const SHARD_PIPE_DESIRED_CAPACITY: i32 = 512*KB as i32;
 
 struct Shard {
