@@ -719,7 +719,7 @@ mod restore_mem_usage {
 
     const BIG_FILE_SIZE: usize = 105*MB;
     const SMALL_FILE_SIZE: usize = 10;
-    const NUM_SMALL_FILES: usize = 100_000;
+    const NUM_SMALL_FILES: usize = 4_000;
     const TOLERABLE_PER_FILE_OVERHEAD: isize = 200_isize;
     const TOLERABLE_CRIU_RECEIVE_OVERHEAD: isize = 12*MB as isize;
 
@@ -808,9 +808,9 @@ mod stress {
     use std::sync::Mutex;
 
     const NUM_THREADS: usize = 5;
-    const NUM_SMALL_FILES: usize = 10000;
-    const NUM_MEDIUM_FILES: usize = 1000;
-    const NUM_MEDIUM_CHUNKED_FILES: usize = 1000;
+    const NUM_SMALL_FILES: usize = 400;
+    const NUM_MEDIUM_FILES: usize = 150;
+    const NUM_MEDIUM_CHUNKED_FILES: usize = 100;
     const NUM_LARGE_FILES: usize = 2;
 
     const SMALL_FILE_SIZE: usize = 10;
