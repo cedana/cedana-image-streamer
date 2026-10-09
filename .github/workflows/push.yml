@@ -22,11 +22,9 @@ on:
         required: false
         default: false
 
-# Shared with release.yml: a release of this commit cancels an in-progress push,
-# while a push never cancels a release.
 concurrency:
-  group: ${{ github.repository }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: cedana-image-streamer-push-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
