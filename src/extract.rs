@@ -70,7 +70,7 @@ const CLIENT_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 /// Data comes in a stream of chunks, which can be as large as 256KB (from capture.rs).
 /// We use 512KB to have two chunks in to avoid stalling the shards.
 /// Making this buffer bigger would most likely trash CPU caches.
-const SHARD_PIPE_DESIRED_CAPACITY: i32 = 512*KB as i32;
+const SHARD_PIPE_DESIRED_CAPACITY: i32 = 4*MB as i32;
 
 struct Shard {
     pipe: UnixPipe,
