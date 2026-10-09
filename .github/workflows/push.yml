@@ -51,6 +51,7 @@ jobs:
     with:
       ref: main
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
+      post_summary: true
 
   test_unit:
     name: Test (Unit)
