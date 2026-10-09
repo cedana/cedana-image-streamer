@@ -15,7 +15,7 @@
 pub mod fs_overlay;
 pub mod fs;
 pub mod mem;
-pub mod fs_parallel;
+pub mod memfd;
 
 use anyhow::Result;
 use crate::unix_pipe::UnixPipe;
@@ -23,10 +23,11 @@ use crate::unix_pipe::UnixPipe;
 // The `ImageStore` is only used during image extraction.
 //
 // `ImageDeserializer` in extract.rs outputs the image into an image store, defined here.
-// We have three image stores:
+// We have four image stores:
 // * `fs::Store`, used to store an image on disk.
 // * `mem::Store`, used to store an image in memory. This is useful to stream the image to
 //   CRIU without touching disk.
+// * `memfd::Store`, used by serve to store images in memfds, allowing for directly sending of file descriptors.
 // * `fs_overlay::Store`, used for bypassing certain files (like fs.tar) when extracting to memory.
 //   These special files are passed via the "--ext-files-fds" option on the CLI.
 

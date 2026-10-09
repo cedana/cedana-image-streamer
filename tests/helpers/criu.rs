@@ -18,14 +18,14 @@
 
 use std::{
     os::unix::net::UnixStream,
-    os::unix::io::AsRawFd,
+    os::unix::io::{AsRawFd, FromRawFd},
     io::Read,
     path::PathBuf,
 };
 use anyhow::{Result, Context};
 use cedana_image_streamer::{
     criu,
-    util::{pb_read, pb_write},
+    util::{pb_read, pb_write, recv_fd},
     unix_pipe::UnixPipe,
 };
 use crate::helpers::util::*;
@@ -42,30 +42,16 @@ impl Criu {
         Ok(Self { socket })
     }
 
-    fn read_file_reply(&mut self) -> Result<criu::FileStatus> {
+    fn read_file_reply(&mut self) -> Result<bool> {
         let reply: criu::ImgStreamerReplyEntry = pb_read(&mut self.socket)?;
-        match reply.status {
-            None => {
-                if reply.exists {
-                    Ok(criu::FileStatus::Ready)
-                } else {
-                    Ok(criu::FileStatus::DoesNotExist)
-                }
-            },
-            Some(status) => {
-                if status == 0 {
-                    Ok(criu::FileStatus::DoesNotExist)
-                } else if status == 1 {
-                    Ok(criu::FileStatus::NotReady)
-                } else {
-                    Ok(criu::FileStatus::Ready)
-                }
-            }
-        }
+        Ok(reply.exists)
     }
 
     pub fn finish(&mut self) -> Result<()> {
-        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: "stop-listener".to_string() })?;
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename: "stop-listener".to_string(),
+            protocol: None,
+        })?;
         // explicitly shutdown the connection
         self.socket.shutdown(std::net::Shutdown::Both)?;
         Ok(())
@@ -73,30 +59,53 @@ impl Criu {
 
     pub fn write_img_file(&mut self, filename: &str) -> Result<UnixPipe> {
         let filename = filename.to_string();
-        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename })?;
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename,
+            protocol: Some(criu::ImgStreamerFileProtocol::SendPipeEnd as i32),
+        })?;
         let (pipe_r, pipe_w) = new_pipe();
         send_fd(&mut self.socket, pipe_r.as_raw_fd())?;
         Ok(pipe_w)
     }
 
+    pub fn send_img_memfd(&mut self, filename: &str, file: &std::fs::File) -> Result<()> {
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename: filename.to_string(),
+            protocol: Some(criu::ImgStreamerFileProtocol::SendRecvMemfd as i32),
+        })?;
+        send_fd(&mut self.socket, file.as_raw_fd())
+    }
+
     pub fn maybe_read_img_file(&mut self, filename: &str) -> Result<Option<UnixPipe>> {
-        let file = filename.to_string();
-        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: file })?;
+        if filename.starts_with("gpu-") && !filename.starts_with("gpu-hostmem-metadata-") {
+            return self.maybe_read_img_memfd(filename);
+        }
+        let filename = filename.to_string();
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename,
+            protocol: Some(criu::ImgStreamerFileProtocol::SendPipeEnd as i32),
+        })?;
 
-        let status = self.read_file_reply()?;
+        if self.read_file_reply()? {
+            let (pipe_r, pipe_w) = new_pipe();
+            send_fd(&mut self.socket, pipe_w.as_raw_fd())?;
+            Ok(Some(pipe_r))
+        } else {
+            Ok(None)
+        }
+    }
 
-        match status {
-            criu::FileStatus::DoesNotExist => {
-                Ok(None)
-            }
-            criu::FileStatus::Ready => {
-                let (pipe_r, pipe_w) = new_pipe();
-                send_fd(&mut self.socket, pipe_w.as_raw_fd())?;
-                Ok(Some(pipe_r))
-            }
-            criu::FileStatus::NotReady => {
-                self.maybe_read_img_file(filename)
-            }
+    pub fn maybe_read_img_memfd(&mut self, filename: &str) -> Result<Option<std::fs::File>> {
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename: filename.to_string(),
+            protocol: Some(criu::ImgStreamerFileProtocol::SendRecvMemfd as i32),
+        })?;
+        if self.read_file_reply()? {
+            let fd = recv_fd(&mut self.socket)?;
+            // SAFETY: recv_fd() transfers ownership of the received descriptor.
+            Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
+        } else {
+            Ok(None)
         }
     }
 
@@ -113,7 +122,10 @@ impl Criu {
 
     pub fn list_img_files(&mut self, pattern: &str) -> Result<Vec<String>> {
         let pattern = pattern.to_string();
-        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry { filename: pattern })?;
+        pb_write(&mut self.socket, &criu::ImgStreamerRequestEntry {
+            filename: pattern,
+            protocol: None,
+        })?;
 
         let mut files = Vec::new();
         let reply: criu::ImgStreamerListReplyEntry = pb_read(&mut self.socket)?;

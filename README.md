@@ -18,10 +18,24 @@ make
 
 For installation see [locally built plugins](https://docs.cedana.ai/daemon/get-started/plugins#locally-built-plugins). For usage, check out [checkpoint/restore streaming](https://docs.cedana.ai/daemon/guides/cr-4).
 
+During capture, each image request on `streamer-capture.sock` is followed by a file
+descriptor. Filenames starting with `gpu-` must supply a fully populated memfd;
+the streamer reads its contents from offset zero. Other filenames supply the read
+end of a pipe. Both inputs use the same shard format for extraction and restore.
+
+During `serve`, buffered image files are stored in memfds. After the usual
+"file exists" reply on `streamer-serve.sock`, a `gpu-` request, except filenames
+matching `gpu-hostmem-metadata-*`, receives the fully populated memfd directly via
+`SCM_RIGHTS`, positioned at offset zero. The client does not send a pipe for these
+requests, and may request the same file more than once (GPU dedup restores map peer
+workers' files); the memfd is shared, not copied. `gpu-hostmem-metadata-*` and other
+filenames use the pipe-based restore protocol and may be requested only once:
+the client supplies the write end of a pipe after the "file exists" reply.
+`gpu-hostmem-metadata-*` files still use memfds during capture.
+
 License
 -------
 cedana-image-streamer is licensed under the [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0).
 
 criu-image-streamer is originally licensed under the
 [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0).
-

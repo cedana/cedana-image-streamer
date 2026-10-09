@@ -25,7 +25,6 @@ use nix::sys::mman::{mmap_anonymous, munmap, ProtFlags, MapFlags};
 ///
 /// We don't use the memmap create because it doesn't offer a len+capacity abstraction. We'd have
 /// to do a wrapper on their `MmapMap` type. That doesn't buy us much code reuse.
-#[derive(Debug)]
 pub struct MmapBuf {
     addr: ptr::NonNull<u8>,
     len: usize,
@@ -47,7 +46,7 @@ impl MmapBuf {
     }
 
     pub fn resize(&mut self, len: usize) {
-        assert!(len <= self.capacity);
+        assert!(len <= self.capacity, "mmap buffer resized to {} bytes, exceeding capacity of {}", len, self.capacity);
         self.len = len;
     }
 
@@ -60,7 +59,6 @@ impl MmapBuf {
     }
 }
 
-unsafe impl Send for MmapBuf {}
 impl Deref for MmapBuf {
     type Target = [u8];
 

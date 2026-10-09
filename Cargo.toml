@@ -1,6 +1,6 @@
 [package]
 name = "cedana-image-streamer"
-version = "0.0.8-16-gdc44e99" # replaced by Makefile
+version = "0.0.0" # replaced by Makefile
 authors = ["Nicolas Viennot <Nicolas.Viennot@twosigma.com>", "Liana Koleva <liana@cedana.ai>"]
 description = "Capture and extract CRIU + Cedana images via UNIX pipes"
 edition = "2021"
@@ -12,6 +12,7 @@ anyhow = "1.0"
 regex = "1.10"
 slab = "0.4"
 libc = "0.2"
+memfd = "0.6"
 prost = "0.14"
 bytes = "1.11"
 nix = { version = "0.31", features = ["socket", "uio", "feature", "poll", "event", "fs", "zerocopy", "mman", "ioctl"] }

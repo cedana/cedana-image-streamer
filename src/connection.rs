@@ -17,12 +17,13 @@
 //  limitations under the License.
 
 use std::{
-    fs, os::unix::{io::{AsRawFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
+    fs, os::unix::{io::{AsRawFd, FromRawFd, OwnedFd, RawFd}, net::{UnixListener, UnixStream}}, path::Path
 };
 use crate::{
-    criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd}
+    criu, unix_pipe::{UnixPipe, UnixPipeImpl}, util::{pb_read_next, pb_write, recv_fd, send_fd}
 };
-use anyhow::{Result, Context};
+use anyhow::{anyhow, Result, Context};
+use memfd::Memfd;
 
 const IMG_STREAMER_CAPTURE_SOCKET_NAME: &str = "streamer-capture.sock";
 const IMG_STREAMER_SERVE_SOCKET_NAME: &str = "streamer-serve.sock";
@@ -76,11 +77,19 @@ pub struct Connection {
     socket: UnixStream,
 }
 
+pub enum FileProtocol {
+    RecvPipeEnd,
+    SendRecvMemfd
+}
+
 impl Connection {
     /// Read and return the next file request. If reached EOF, returns Ok(None).
-    pub fn read_next_file_request(&mut self) -> Result<Option<String>> {
+    pub fn read_next_file_request(&mut self) -> Result<Option<(String, FileProtocol)>> {
         Ok(pb_read_next(&mut self.socket)?
-            .map(|(req, _): (criu::ImgStreamerRequestEntry, _)| req.filename))
+            .map(|(req, _): (criu::ImgStreamerRequestEntry, _)| (req.filename, match req.protocol {
+                Some(1) => FileProtocol::SendRecvMemfd,
+                _ => FileProtocol::RecvPipeEnd,
+            })))
     }
 
     /// Returns the data pipe that is used to transfer the file.
@@ -88,25 +97,28 @@ impl Connection {
         UnixPipe::new(recv_fd(&mut self.socket)?)
     }
 
+    /// recieve a memfd from client with the file data.
+    pub fn recv_memfd(&mut self) -> Result<Memfd> {
+        let fd = recv_fd(&mut self.socket)?;
+        // SAFETY: recv_fd() returns a new descriptor whose ownership is transferred to us.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        // `try_from_fd` checks that the fd supports sealing, which only memfds do.
+        Memfd::try_from_fd(owned).map_err(|_| anyhow!("fd {} is not a memfd", fd))
+    }
+
+    /// Hands a fully populated, sealed image memfd to the restore client.
+    /// we open a new fd using proc, instead of dup() so that client gets a new file handle
+    /// from the kernel and can have their own offset for reading.
+    pub fn send_memfd(&mut self, memfd: &Memfd) -> Result<()> {
+        // open a new fd using proc and send that over
+        send_fd(&mut self.socket, std::fs::File::open(format!("/proc/self/fd/{}", memfd.as_raw_fd()))?.as_raw_fd())
+    }
+
     /// During restore, client requests image files that may or may not exist.
     /// We must let client know if we hold has the requested file in question.
     /// It is done via `send_file_reply()`. Not used during checkpointing.
-    /// exists doesn't matter if file_status is set
-    pub fn send_file_reply(&mut self, exists: bool, file_status: Option<criu::FileStatus>) -> Result<()> {
-        let status = match file_status {
-            None => {
-                if !exists {
-                    criu::FileStatus::DoesNotExist as i32
-                } else {
-                    criu::FileStatus::Ready as i32
-                }
-            },
-            Some(s) => s as i32
-        };
-        pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry {
-            exists,
-            status: Some(status)
-        })?;
+    pub fn send_file_reply(&mut self, exists: bool) -> Result<()> {
+        pb_write(&mut self.socket, &criu::ImgStreamerReplyEntry { exists })?;
         Ok(())
     }
 

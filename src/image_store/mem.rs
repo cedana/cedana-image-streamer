@@ -81,7 +81,6 @@ pub enum File {
 
 use File::*;
 
-unsafe impl Send for File {}
 impl File {
     pub fn new_small() -> Self {
         Small(Vec::new())
@@ -91,7 +90,7 @@ impl File {
         // This function is always used to convert a small file into a large
         // file. There's no panic as `init_data` is a most PAGE_SIZE=4KB, which
         // fits into the mmap buffer (size 10MB).
-        assert!(init_data.len() <= MAX_LARGE_CHUNK_SIZE);
+        assert!(init_data.len() <= MAX_LARGE_CHUNK_SIZE, "Small file of {} bytes exceeds the large chunk size of {}", init_data.len(), MAX_LARGE_CHUNK_SIZE);
 
         let mut chunk = MmapBuf::with_capacity(MAX_LARGE_CHUNK_SIZE);
         chunk.resize(init_data.len());

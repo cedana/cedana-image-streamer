@@ -18,26 +18,27 @@
 
 use std::{
     collections::{BinaryHeap},
-    os::unix::io::AsRawFd,
-    io::Write,
+    os::unix::io::{AsRawFd, AsFd},
+    io::Seek,
     time::Instant,
     cmp::{min, max},
     path::Path,
     sync::Once,
     rc::Rc,
-    fs
+    fs,
 };
 use crate::{
     poller::{Poller, EpollFlags},
-    connection::{Listener, Connection},
+    connection::{Listener, Connection, FileProtocol},
     unix_pipe::{UnixPipe, UnixPipeImpl},
     util::*,
     image,
     image::marker,
     impl_ord_by,
 };
-use anyhow::Result;
-use nix::sys::epoll::EpollTimeout;
+use anyhow::{Context, Result};
+use memfd::Memfd;
+use nix::fcntl::{splice, SpliceFFlags};
 
 // When client dumps an application, it first connects to our UNIX socket. client will send us many
 // image files during the dumping process. To send an image file, it sends a protobuf request that
@@ -76,19 +77,64 @@ const SHARD_PIPE_DESIRED_CAPACITY: i32 = 1*MB as i32;
 
 /// An `ImageFile` represents a file coming from client.
 /// The complete client image is comprised of many of these files.
-struct ImageFile {
-    /// Incoming pipe from client
-    pipe: UnixPipe,
-    /// Associated filename (e.g., "pages-3.img")
-    filename: Rc<str>,
+enum ImageFile {
+    Pipe {
+        pipe: UnixPipe,
+        filename: Rc<str>,
+    },
+    Memfd {
+        memfd: Memfd,
+        filename: Rc<str>,
+    },
 }
 
 impl ImageFile {
-    pub fn new(filename: String, mut pipe: UnixPipe) -> Self {
+    pub fn new_pipe(filename: String, mut pipe: UnixPipe) -> Self {
         // Try setting the pipe capacity. Failing is okay, it's just for better performance.
         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-        let filename = Rc::from(filename);
-        Self { pipe, filename }
+        Self::Pipe { pipe, filename: Rc::from(filename) }
+    }
+
+    pub fn new_memfd(filename: String, memfd: Memfd) -> Result<Self> {
+        // The client typically leaves the file position at EOF so rewind it
+        // to the beginning
+        memfd.as_file().rewind()
+            .with_context(|| format!("Failed to rewind memfd for {}", filename))?;
+        Ok(Self::Memfd { memfd, filename: Rc::from(filename) })
+    }
+
+    fn filename(&self) -> &Rc<str> {
+        match self {
+            Self::Pipe { filename, .. } | Self::Memfd { filename, .. } => filename,
+        }
+    }
+
+    fn readable_len(&self) -> Result<(u64, bool)> {
+        match self {
+            Self::Pipe { pipe, .. } => {
+                let len = pipe.fionread()? as u64;
+                Ok((len, len == 0))
+            }
+            // memfd is fully populated so just return len + EOF
+            Self::Memfd { memfd, .. } => Ok((memfd.as_file().metadata()?.len(), true)),
+        }
+    }
+
+    fn splice_all(&mut self, dst: &mut UnixPipe, len: usize) -> Result<()> {
+        match self {
+            Self::Pipe { pipe, .. } => pipe.splice_all(dst, len),
+            Self::Memfd { memfd, filename } => {
+                let mut remaining = len;
+                while remaining > 0 {
+                    let written = splice(memfd.as_file().as_fd(), None, dst.as_fd(), None,
+                                         remaining, SpliceFFlags::SPLICE_F_MORE)
+                        .with_context(|| format!("Failed to splice memfd for {}", filename))?;
+                    ensure!(written > 0, "Reached EOF during splice() for {}", filename);
+                    remaining -= written;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -124,21 +170,17 @@ impl Shard {
 impl_ord_by!(Shard, |a: &Self, b: &Self| a.remaining_space.cmp(&b.remaining_space)
     .then(a.pipe.as_raw_fd().cmp(&b.pipe.as_raw_fd())));
 
-/// The image serializer reads data from client's image files pipes, chunks the data, and writes into
+/// The image serializer reads data from client's image files, chunks the data, and writes into
 /// shard pipes. Each chunk is written to the shard that has the most room available in its pipe.
 /// We keep track of which shard has the most room with a binary heap.
 /// Chunks are ordered by a sequence number. Semantically, the sequence number should be per image
 /// file, but for simplicity, we use a global sequence number. It makes the implementation easier,
 /// esp. on the deserializer side.
 struct ImageSerializer<'a> {
-    small_file_shard: &'a mut Shard,
-    small_file_seq: u64,
     shards: BinaryHeap<&'a mut Shard>,
     shard_pipe_capacity: i32, // constant
     seq: u64,
     current_filename: Option<Rc<str>>,
-    current_file_size: u64,
-    metadata: Vec<String>
 }
 
 struct Chunk<'a> {
@@ -152,35 +194,13 @@ static CHUNK_MARKER_KERNEL_SIZE: &PAGE_SIZE = &PAGE_SIZE;
 
 impl<'a> ImageSerializer<'a> {
     pub fn new(shards: &'a mut [Shard], shard_pipe_capacity: i32) -> Self {
-        assert!(shards.len() >= 2);
-        let mut shard_iter = shards.iter_mut();
+        assert!(!shards.is_empty(), "No shards to serialize the image into");
         Self {
-            small_file_shard: shard_iter.nth(0).unwrap(),
-            small_file_seq: 0,
             shard_pipe_capacity,
-            shards: shard_iter.collect(),
+            shards: shards.iter_mut().collect(),
             current_filename: None,
             seq: 0,
-            current_file_size: 0,
-            metadata: Vec::new()
         }
-    }
-
-    fn write_metadata_to_small_shard(&mut self) -> Result<()> {
-        let mut marker = self.gen_marker(marker::Body::Filename(METADATA_FILE.to_string()), true);
-        self.write_chunk(Chunk { marker, data: None }, true)?;
-
-        // we have to directly write metadata instead of call write_chunk because it expects
-        // a image file or a pipe
-        let bytes = serde_json::to_vec(&self.metadata)?;
-        marker = self.gen_marker(marker::Body::FileData(bytes.len() as u32), true);
-        let marker_size = pb_write(&mut self.small_file_shard.pipe, &marker)?;
-        self.small_file_shard.pipe.write_all(&bytes)?;
-        self.small_file_shard.bytes_written += bytes.len() as u64 + marker_size as u64;
-
-        marker = self.gen_marker(marker::Body::FileEof(true), true);
-        self.write_chunk(Chunk { marker, data: None }, true)?;
-        Ok(())
     }
 
     fn refresh_all_shard_remaining_space(&mut self) -> Result<()> {
@@ -196,15 +216,9 @@ impl<'a> ImageSerializer<'a> {
         Ok(())
     }
 
-    fn gen_marker(&mut self, body: marker::Body, is_small_file: bool) -> image::Marker {
-        let seq;
-        if is_small_file {
-            seq = self.small_file_seq;
-            self.small_file_seq += 1;
-        } else {
-            seq = self.seq;
-            self.seq += 1;
-        }
+    fn gen_marker(&mut self, body: marker::Body) -> image::Marker {
+        let seq = self.seq;
+        self.seq += 1;
         image::Marker { seq, body: Some(body) }
     }
 
@@ -216,7 +230,7 @@ impl<'a> ImageSerializer<'a> {
         max(self.shard_pipe_capacity/4 - **CHUNK_MARKER_KERNEL_SIZE as i32, *PAGE_SIZE as i32)
     }
 
-    fn write_chunk(&mut self, chunk: Chunk, is_small_file: bool) -> Result<()> {
+    fn write_chunk(&mut self, chunk: Chunk) -> Result<()> {
         let data_size = match chunk.data {
             None => 0,
             Some((_, size)) => size,
@@ -225,97 +239,74 @@ impl<'a> ImageSerializer<'a> {
         // Estimate the space required in the shard pipe to write the marker and its data.
         let space_required = **CHUNK_MARKER_KERNEL_SIZE as i32 + data_size;
 
-        match is_small_file {
-            false => {
-                // Check if the shard with the most remaining space is likely to block.
-                // If so, refresh other pipes' remaining space to check for a better candidate.
-                // Note: it's safe to unwrap(), because we always have one shard to work with.
-                if self.shards.peek().unwrap().remaining_space < space_required {
-                    // We refresh the `remaining_space` of all shards instead of just refreshing the
-                    // current shard, otherwise we risk starvation of other shards without knowing it.
-                    self.refresh_all_shard_remaining_space()?;
-                }
-
-                // Pick the shard with the greatest remaining space for our write. We might block when we
-                // write, but that's inevitable, and that's how our output is throttled.
-                let mut shard = self.shards.peek_mut().unwrap();
-                // 1) Write the chunk marker
-                let marker_size = pb_write(&mut shard.pipe, &chunk.marker)?;
-
-                // 2) and its associated data, if specified
-                if let Some((img_file, _)) = chunk.data {
-                    img_file.pipe.splice_all(&mut shard.pipe, data_size as usize)?;
-                }
-
-                shard.bytes_written += marker_size as u64 + data_size as u64;
-                self.current_file_size += marker_size as u64 + data_size as u64;
-                shard.remaining_space -= space_required;
-                // As the shard reference drops, the binary heap gets reordered. nice.
-
-                Ok(())
-            }
-            true => {
-                let marker_size = pb_write(&mut self.small_file_shard.pipe, &chunk.marker)?;
-                if let Some((img_file, _)) = chunk.data {
-                    img_file.pipe.splice_all(&mut self.small_file_shard.pipe, data_size as usize)?;
-                }
-                self.current_file_size += marker_size as u64 + data_size as u64;
-                self.small_file_shard.bytes_written += marker_size as u64 + data_size as u64;
-                self.small_file_shard.remaining_space -= space_required;
-                Ok(())
-            }
+        // Check if the shard with the most remaining space is likely to block.
+        // If so, refresh other pipes' remaining space to check for a better candidate.
+        // Note: it's safe to unwrap(), because we always have one shard to work with.
+        if self.shards.peek().unwrap().remaining_space < space_required {
+            // We refresh the `remaining_space` of all shards instead of just refreshing the
+            // current shard, otherwise we risk starvation of other shards without knowing it.
+            self.refresh_all_shard_remaining_space()?;
         }
 
+        // Pick the shard with the greatest remaining space for our write. We might block when we
+        // write, but that's inevitable, and that's how our output is throttled.
+        let mut shard = self.shards.peek_mut().unwrap();
+
+        // 1) Write the chunk marker
+        let marker_size = pb_write(&mut shard.pipe, &chunk.marker)?;
+
+        // 2) and its associated data, if specified
+        if let Some((img_file, _)) = chunk.data {
+            img_file.splice_all(&mut shard.pipe, data_size as usize)?;
+        }
+
+        shard.bytes_written += marker_size as u64 + data_size as u64;
+        shard.remaining_space -= space_required;
+        // As the shard reference drops, the binary heap gets reordered. nice.
+
+        Ok(())
     }
 
-    fn maybe_write_filename_marker(&mut self, img_file: &ImageFile, is_small_file: bool) -> Result<()> {
+    fn maybe_write_filename_marker(&mut self, img_file: &ImageFile) -> Result<()> {
         // We avoid repeating the filename on sequential data chunks of the same file for
         // performance. We write the filename only when needed.
-        let filename = &img_file.filename;
+        let filename = img_file.filename();
         match &self.current_filename {
             Some(current_filename) if current_filename == filename => {},
             _ => {
                 self.current_filename = Some(Rc::clone(filename));
-                let marker = self.gen_marker(marker::Body::Filename(filename.to_string()), is_small_file);
-                self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
+                let marker = self.gen_marker(marker::Body::Filename(filename.to_string()));
+                self.write_chunk(Chunk { marker, data: None })?;
             }
         }
 
         Ok(())
     }
 
+    /// Returns false if EOF of img_file is reached, true otherwise.
     pub fn drain_img_file(&mut self, img_file: &mut ImageFile) -> Result<bool> {
-        let mut readable_len = img_file.pipe.fionread()?;
+        let (mut readable_len, is_eof) = img_file.readable_len()?;
 
-        // This code is only invoked when the poller reports that the image file's pipe is readable
-        // (or errored), which is why we can detect EOF when fionread() returns 0.
-        let is_eof = readable_len == 0;
-        let is_small_file = is_small_file(&img_file.filename);
-
-        self.maybe_write_filename_marker(img_file, is_small_file)?;
+        self.maybe_write_filename_marker(img_file)?;
 
         while readable_len > 0 {
-            let data_size = min(readable_len, self.chunk_max_data_size());
-            let marker = self.gen_marker(marker::Body::FileData(data_size as u32), is_small_file);
-            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) }, is_small_file)?;
-            readable_len -= data_size;
+            let data_size = min(readable_len, self.chunk_max_data_size() as u64) as i32;
+            let marker = self.gen_marker(marker::Body::FileData(data_size as u32));
+            self.write_chunk(Chunk { marker, data: Some((img_file, data_size)) })?;
+            readable_len -= data_size as u64;
         }
 
         if is_eof {
-            self.metadata.push(img_file.filename.to_string());
-            let marker = self.gen_marker(marker::Body::FileEof(true), is_small_file);
-            self.write_chunk(Chunk { marker, data: None }, is_small_file)?;
+            let marker = self.gen_marker(marker::Body::FileEof(true));
+            self.write_chunk(Chunk { marker, data: None })?;
         }
 
         Ok(!is_eof)
     }
 
     pub fn write_image_eof(&mut self) -> Result<()> {
-        eprintln!("list of files dumped: {:#?}", self.metadata);
-        self.write_metadata_to_small_shard()?;
-        // write image eof to the main shards
-        let marker = self.gen_marker(image::marker::Body::ImageEof(true), false);
-        self.write_chunk(Chunk { marker, data: None }, false)
+        let marker = self.gen_marker(image::marker::Body::ImageEof(true));
+        self.write_chunk(Chunk { marker, data: None })
     }
 }
 
@@ -350,8 +341,9 @@ pub fn capture(
     let listener_key = poller.add(listener.as_raw_fd(), PollType::Listener(listener), EpollFlags::EPOLLIN)?;
 
     for (filename, pipe) in ext_file_pipes {
-        let img_file = ImageFile::new(filename, pipe);
-        poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+        let fd = pipe.as_raw_fd();
+        let img_file = ImageFile::new_pipe(filename, pipe);
+        poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
     }
 
     // Used to compute transfer speed. But the real start is when we call
@@ -363,11 +355,12 @@ pub fn capture(
     let mut img_serializer = ImageSerializer::new(&mut shards, shard_pipe_capacity);
 
     // Process all inputs (ext files, client's connection, and client's files) until they reach EOF.
-    // As client requests to write files, we receive new unix pipes that are added to the poller.
+    // As client requests to write files, pipes are added to the poller. Memfds are drained directly
+    // because regular files cannot be monitored by epoll.
     // We use an epoll_capacity of 8. This doesn't really matter as the number of concurrent
     // connection is typically at most 2.
     let epoll_capacity = 16;
-    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity, EpollTimeout::NONE)? {
+    while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
         match poll_obj {
             PollType::Listener(listener) => { // New connection waiting, accept it
                 let conn = listener.accept()?;
@@ -375,12 +368,12 @@ pub fn capture(
             }
             PollType::Client(client) => {
                 match client.read_next_file_request()? {
-                    Some(ref filename) if filename == "stop-listener" => {
+                    Some((ref filename, _)) if filename == "stop-listener" => {
                         // Stop accepting any new connections. Pending files will still be
                         // processed.
                         poller.remove(listener_key)?;
                     }
-                    Some(filename) => {
+                    Some((filename, protocol)) => {
                         if filename != "cpuinfo.img" {
                             // Once the checkpoint has started, we must notify the controller.
                             // This is useful for our controller to kick tarring the file system as
@@ -393,10 +386,23 @@ pub fn capture(
                             });
                         }
 
-                        let pipe = client.recv_pipe()?;
-                        let img_file = ImageFile::new(filename, pipe);
-                        poller.add(img_file.pipe.as_raw_fd(), PollType::ImageFile(img_file),
-                                   EpollFlags::EPOLLIN)?;
+                        // depending on the protocol the client might send us a memfd with the
+                        // data or the read end of a pipe
+                        match protocol {
+                            FileProtocol::SendRecvMemfd => {
+                                let memfd = client.recv_memfd()?;
+                                let mut img_file = ImageFile::new_memfd(filename, memfd)?;
+                                img_serializer.drain_img_file(&mut img_file)?;
+                            }
+                            FileProtocol::RecvPipeEnd => {
+                                let pipe = client.recv_pipe()?;
+                                let fd = pipe.as_raw_fd();
+                                let img_file = ImageFile::new_pipe(filename, pipe);
+                                // only add pipes to poller, because memfds arrive fully populated
+                                // with the file contents.
+                                poller.add(fd, PollType::ImageFile(img_file), EpollFlags::EPOLLIN)?;
+                            }
+                        }
                     }
                     None => {
                         // We are done receiving file requests. We can close the socket.
