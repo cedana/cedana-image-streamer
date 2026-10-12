@@ -6,6 +6,7 @@ permissions:
   id-token: write
   pull-requests: write
   checks: write
+  actions: read
 
 on:
   pull_request:
@@ -51,7 +52,7 @@ jobs:
 
   download:
     name: Download
-    uses: cedana/cedana/.github/workflows/download.yml@main
+    uses: cedana/cedana/.github/workflows/download.yml@experiment/streamer-memfd
     secrets: inherit
     with:
       cedana_version: main
@@ -60,7 +61,7 @@ jobs:
 
   test:
     name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
+    uses: cedana/cedana/.github/workflows/test_streamer.yml@experiment/streamer-memfd
     needs: [build, download]
     secrets: inherit
     with:
