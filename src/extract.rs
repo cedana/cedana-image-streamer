@@ -17,7 +17,7 @@
 //  limitations under the License.
 
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap},
     os::unix::io::AsFd,
     time::Instant,
     path::Path,
@@ -322,8 +322,6 @@ fn serve_img(
     let mut poller = Poller::new()?;
     let listener_key = poller.add(listener.as_raw_fd(), PollType::Listener(listener), EpollFlags::EPOLLIN)?;
 
-    let mut filenames_of_sent_files = HashSet::new();
-
     let epoll_capacity = 16;
     while let Some((poll_key, poll_obj)) = poller.poll(epoll_capacity)? {
         match poll_obj {
@@ -346,28 +344,17 @@ fn serve_img(
                     Some((filename, protocol)) => {
                         match protocol {
                             FileProtocol::RecvPipeEnd => {
-                                match mem_store.remove(&filename) {
+                                match mem_store.get(&filename) {
+                                    // Files stay in the store, so they can be served as many times as requested.
                                     Some(memory_file) => {
-                                        filenames_of_sent_files.insert(filename.clone());
                                         client.send_file_reply(true)?; // true means that the file exists.
                                         let mut pipe = client.recv_pipe()?;
                                         // Try setting the pipe capacity. Failing is okay.
                                         let _ = pipe.set_capacity(CLIENT_PIPE_DESIRED_CAPACITY);
-                                        image_store::memfd::drain(memory_file, &mut pipe)
+                                        image_store::memfd::send(memory_file, &mut pipe)
                                             .with_context(|| format!("while serving file {}", filename))?;
                                     }
-                                    None => {
-                                        // If we keep the image file in our process, Client will also
-                                        // have a copy of the image file. This uses x2 the memory for an image
-                                        // file. For large files like memory pages, we could very much go over
-                                        // the machine memory capacity.
-                                        eprintln!("Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed for non-gpu files", filename);
-                                        ensure!(!filenames_of_sent_files.contains(&filename),
-                                            "Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed to keep the memory usage low", filename);
-                                        client.send_file_reply(false)?; // false means that the file does not exist.
-                                    }
+                                    None => client.send_file_reply(false)?, // false means that the file does not exist.
                                 }
                             }
                             FileProtocol::SendRecvMemfd => {

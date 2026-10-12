@@ -88,15 +88,20 @@ impl ImageFile for Memfd {
     }
 }
 
-// handles sending data over pipe, and deletes the file once its fully sent
-pub fn drain(file: Memfd, dst: &mut UnixPipe) -> Result<()> {
-    let mut file = file.into_file();
-    let mut remaining = file.metadata()?.len();
+/// Splices the whole file into `dst`. The file stays in the store so it can be served again.
+/// We pass an explicit offset to splice() so the file's own offset is left untouched: it is
+/// shared with every client that received this memfd via `send_memfd()`.
+pub fn send(file: &Memfd, dst: &mut UnixPipe) -> Result<()> {
+    let file = file.as_file();
+    let len = file.metadata()?.len() as i64;
+    let mut offset: i64 = 0;
 
-    while remaining > 0 {
-        let chunk_size = remaining.min(MB as u64) as usize;
-        file.splice_all(dst, chunk_size)?;
-        remaining -= chunk_size as u64;
+    while offset < len {
+        let chunk_size = (len - offset).min(MB as i64) as usize;
+        let written = splice(file.as_fd(), Some(&mut offset), dst.as_fd(), None,
+                             chunk_size, SpliceFFlags::SPLICE_F_MORE)
+            .context("Failed to splice memfd into client pipe")?;
+        ensure!(written > 0, "Reached EOF during splice() from memfd");
     }
 
     Ok(())

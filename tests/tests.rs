@@ -363,15 +363,16 @@ mod gpu_memfd {
                     assert_eq!(again.metadata()?.ino(), self.restored_memfds.last().unwrap().1
                                .metadata()?.ino(), "Repeat request must share the same memfd");
                 } else {
-                    assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
-                               "File data content mismatch for {}", filename);
+                    // Every file can be served as many times as requested.
+                    for _ in 0..2 {
+                        assert_eq!(&restore.criu.read_img_file_into_vec(filename)?, data,
+                                   "File data content mismatch for {}", filename);
+                    }
                 }
             }
-            // Pipe-served files leave the store once sent; GPU memfds stay for repeat requests.
+            // All files stay in the store after being served.
             let remaining = restore.criu.list_img_files("*")?;
-            assert_eq!(remaining.len(), self.restored_memfds.len());
-            assert!(remaining.iter().all(|name| name.starts_with("gpu-")
-                && !name.starts_with("gpu-hostmem-metadata-")));
+            assert_eq!(remaining.len(), self.files.len());
             Ok(())
         }
 
