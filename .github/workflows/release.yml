@@ -1,5 +1,9 @@
 name: Release
 
+# Tags only publish to the alpha channel (propagator cedana-image-streamer-alpha) at version = tag.
+# cedana-marshal's release suite tests these exact artifacts, and its release-publish promotes them
+# to the release channel, moves latest and creates the GitHub release.
+
 permissions:
   actions: write
   contents: write
@@ -17,11 +21,6 @@ on:
       debug_build:
         type: boolean
         description: "Run build with debugging enabled"
-        required: false
-        default: false
-      debug_test:
-        type: boolean
-        description: "Run tests with debugging enabled"
         required: false
         default: false
       debug_publish:
@@ -42,45 +41,13 @@ jobs:
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_build }}
 
-  download:
-    name: Download
-    uses: cedana/cedana/.github/workflows/download.yml@main
-    secrets: inherit
-    with:
-      cedana_version: main
-      criu_version: criu-dev
-      gpu_version: main
-
-  test:
-    name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
-    needs: [build, download]
-    secrets: inherit
-    with:
-      ref: main
-      debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
-      post_summary: true
-
-  test_unit:
-    name: Test (Unit)
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v2
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-      - run: make test
-
   publish:
     name: Publish
     uses: ./.github/workflows/publish.yml
-    needs: test
+    needs: build
     secrets: inherit
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_publish }}
-      github: true
       propagator: true
-      propagator_repo: cedana-image-streamer
-      post_summary: true
+      propagator_repo: cedana-image-streamer-alpha
+      post_summary: false
