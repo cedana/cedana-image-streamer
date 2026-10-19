@@ -84,7 +84,7 @@ impl UnixPipeImpl for UnixPipe {
         loop {
             match pipes.iter_mut().try_for_each(|pipe| pipe.set_capacity(capacity)) {
                 Err(Errno::EPERM) => {
-                    assert!(capacity > *PAGE_SIZE as i32);
+                    assert!(capacity > *PAGE_SIZE as i32, "Failed to set pipe capacity even at PAGE_SIZE={}", *PAGE_SIZE);
                     capacity /= 2;
                     continue;
                 }

@@ -35,7 +35,6 @@ pub mod ord_by;
 pub mod image_patcher;
 pub mod image_store;
 pub mod mmap_buf;
-pub mod semaphore;
 
 // Protobufs definitions are defined in ../proto/
 #[allow(clippy::all)]
