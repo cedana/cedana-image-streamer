@@ -19,11 +19,6 @@ on:
         description: Run build with debugging enabled
         required: false
         default: false
-      debug_test:
-        type: boolean
-        description: Run tests with debugging enabled
-        required: false
-        default: false
       debug_publish:
         type: boolean
         description: Run publish with debugging enabled
@@ -48,25 +43,6 @@ jobs:
     secrets: inherit
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_build }}
-
-  download:
-    name: Download
-    uses: cedana/cedana/.github/workflows/download.yml@main
-    secrets: inherit
-    with:
-      cedana_version: main
-      criu_version: criu-dev
-      gpu_version: main
-
-  test:
-    name: Test
-    uses: cedana/cedana/.github/workflows/test_streamer.yml@main
-    needs: [build, download]
-    secrets: inherit
-    with:
-      ref: main
-      debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_test }}
-      post_summary: true
 
   test_unit:
     name: Test (Unit)
