@@ -124,6 +124,9 @@ pub fn is_small_file(filename: &str) -> bool {
         "runc.netns_eth0_ipv4addr" => true,
         file if file.contains("gpu") && file.contains("size") => true,
         file if file.starts_with("gpu-noctx-calls-") => true,
+        // read before GPU memory on restore but written after it, so they must not queue behind it
+        file if file.starts_with("gpu-hostmem-metadata-") => true,
+        file if file.starts_with("gpu-envvars-") => true,
         // large files
         file if Regex::new(r"^rw-layer-[0-9]+\.img$").unwrap().is_match(file) => false,
         file if Regex::new(r"^pages-[0-9]+\.img$").unwrap().is_match(file) => false,
@@ -135,7 +138,6 @@ pub fn is_small_file(filename: &str) -> bool {
         file if file.starts_with("gpu-hostmem-") => false,
         file if file.starts_with("gpu-ctxshm-") => false,
         file if file.starts_with("gpu-virtmem-") => false,
-        file if file.starts_with("gpu-envvars-") => false,
         // anything else is treated as small
         _ => true
     }
