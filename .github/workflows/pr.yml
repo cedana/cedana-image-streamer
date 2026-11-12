@@ -44,16 +44,19 @@ jobs:
     with:
       debug: ${{ startsWith(github.event_name, 'workflow') && inputs.debug_build }}
 
+  # Doesn't use the build's binaries, so it doesn't wait for them
   test_unit:
     name: Test (Unit)
-    runs-on: ubuntu-latest
-    needs: build
+    runs-on: runs-on=${{github.run_id}}/runner=4cpu-amd64/extras=s3-cache
     steps:
-      - uses: actions/checkout@v2
+      - uses: runs-on/action@v2
+      - uses: actions/checkout@v4
       - name: Install protoc
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
       - run: make test
 
   publish:

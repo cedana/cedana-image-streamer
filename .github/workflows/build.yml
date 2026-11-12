@@ -17,7 +17,8 @@ on:
 jobs:
   streamer:
     name: Streamer
-    runs-on: runs-on=${{github.run_id}}/runner=1cpu-${{ matrix.arch }}/extras=s3-cache
+    # The release build took 60-100s on 1 CPU, with no cache
+    runs-on: runs-on=${{github.run_id}}/runner=4cpu-${{ matrix.arch }}/extras=s3-cache
     strategy:
       fail-fast: false
       matrix:
@@ -25,12 +26,10 @@ jobs:
           - amd64
           - arm64
     steps:
-      - uses: runs-on/action@v1
-      - uses: actions/checkout@v2
+      - uses: runs-on/action@v2
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Install dependencies
         run: |
@@ -38,6 +37,9 @@ jobs:
           sudo apt -y install protobuf-compiler
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Build cedana-image-streamer
         run: |
