@@ -15,7 +15,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: runs-on=${{github.run_id}}/runner=4cpu-amd64
+    runs-on: runs-on=${{github.run_id}}/pool=4cpu-amd64
     if: inputs.rust
     steps:
       - uses: runs-on/action@v2
