@@ -18,7 +18,7 @@ jobs:
   streamer:
     name: Streamer
     # The release build took 60-100s on 1 CPU, with no cache
-    runs-on: runs-on=${{github.run_id}}/runner=4cpu-${{ matrix.arch }}/extras=s3-cache
+    runs-on: runs-on=${{github.run_id}}/runner=4cpu-${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:

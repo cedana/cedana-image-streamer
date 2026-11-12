@@ -47,7 +47,7 @@ jobs:
   # Doesn't use the build's binaries, so it doesn't wait for them
   test_unit:
     name: Test (Unit)
-    runs-on: runs-on=${{github.run_id}}/runner=4cpu-amd64/extras=s3-cache
+    runs-on: runs-on=${{github.run_id}}/runner=4cpu-amd64
     steps:
       - uses: runs-on/action@v2
       - uses: actions/checkout@v4
