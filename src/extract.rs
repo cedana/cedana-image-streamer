@@ -526,10 +526,10 @@ fn serve_img(
                     }
                     Some(filename) => {
                         if !available_files.contains(&filename) {
-                            eprintln!("file: {} not found", &filename);
+                            eprintln!("file: {} not found", filename);
                             client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                         } else {
-                            eprintln!("file request {}", &filename);
+                            eprintln!("file request {}", filename);
                             match store.remove(&filename) {
                                 Some(chunks) => {
                                     // we should not get anymore requests for the file
@@ -547,7 +547,7 @@ fn serve_img(
                                 }
                                 None => {
                                     if available_files.contains(&filename) && !filenames_of_sent_files.contains(&filename) {
-                                        eprintln!("file: {} not ready", &filename);
+                                        eprintln!("file: {} not ready", filename);
                                         client.send_file_reply(true, Some(FileStatus::NotReady))?;
                                     } else {
                                         // If we keep the image file in our process, Client will also
@@ -556,7 +556,7 @@ fn serve_img(
                                         // the machine memory capacity.
                                         ensure!(!filenames_of_sent_files.contains(&filename) && !available_files.contains(&filename),
                                             "Client is requesting the image file `{}` multiple times. \
-                                            This is not allowed to keep the memory usage low", &filename);
+                                            This is not allowed to keep the memory usage low", filename);
                                         client.send_file_reply(false, Some(FileStatus::DoesNotExist))?; // false means that the file does not exist.
                                     }
                                 }

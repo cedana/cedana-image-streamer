@@ -15,9 +15,10 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{github.run_id}}/pool=4cpu-amd64
     if: inputs.rust
     steps:
+      - uses: runs-on/action@v2
       - uses: actions/checkout@v4
       - name: Install protoc
         run: |
@@ -26,5 +27,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
       - name: Run clippy
         run: cargo clippy --all-features -- -D warnings
